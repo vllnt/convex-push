@@ -162,15 +162,20 @@ Defaults and choices the doc marks proposed or leaves open:
   dropped); more than 20 APNs `BadDeviceToken` per app in 10 minutes pauses that
   app (`APP_PAUSED`); `BadDeviceToken` and `DeviceTokenNotForTopic` count. A
   send the fuse would delay past the message's expiry fails at once
-  (`TTL_EXPIRED`).
+  (`TTL_EXPIRED`). Its reservation still counts against the device's bucket
+  (no `maxReserved`); this only slows a device already sent more than 60 a
+  minute, and clears with time.
 - Transaction budgets: a subject fans out to its first 100 active devices
-  (more logs `message.device_cap`); `sendBatch` refuses more than 1,000
+  (more logs `message.device_cap`); `sendBatch` refuses more than 100
   deliveries; `prune` deletes about `batch` rows per pass (default and max
-  4,000, 100 messages looked at) and keeps a message until a day after it
-  expires.
+  1,000, 100 messages looked at, up to 100 devices) and keeps a message until a
+  day after it expires. The Convex reviewer measured on a local backend: a
+  100-delivery batch passed, 150 timed out; prune at 4,000 rows hit the
+  4,096-read limit; 500 device rate-limit resets in one pass timed out.
 - Outbound: provider requests never follow redirects; Web Push endpoints must
   be https to a public host name (no IP literal, `localhost` or private suffix;
-  DNS answers not checked); `token_uri` must be on `*.googleapis.com`;
+  trailing dot; DNS answers not checked); the Google token exchange always
+  goes to `oauth2.googleapis.com` (a key file's `token_uri` is ignored);
   `collapseKey` and the APNs topic must be printable ASCII.
 - `lastSeenAt` is refreshed on every `register`, so Apple's 410 timestamp can
   tell a later registration apart. A known `installRef` is reused only within
@@ -183,7 +188,8 @@ Defaults and choices the doc marks proposed or leaves open:
 - The custom sender receives `messageId` and `deliveryId` beyond the doc's list,
   so it can pass an idempotency key to its provider.
 - Stored function handles must have the `function://` form; a plain function
-  name is refused, so a stored value cannot call the component's own functions.
+  name is refused. This is a form check, not a security boundary: the host
+  passes its own handles and is trusted.
 - `convex-helpers` is a runtime dependency because `@convex-dev/workpool` 0.5
   requires it as a peer. Peer `convex@^1.47.0` follows workpool 0.5's peer range.
 - `publish.yml` keeps a `CANARY_ENABLED` repository-variable gate (as in

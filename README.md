@@ -194,7 +194,7 @@ queued. `to` is either `{ subjectRef }` (every active device of that subject) or
 `{ deviceIds }`. A message without title and body is silent: a background push
 on APNs and a data-only message on FCM. Web Push has no silent push, so those
 deliveries fail with `SILENT_NOT_SUPPORTED`. `sendBatch` queues up to 100
-messages in one call.
+messages and 100 deliveries in one call.
 
 ### Watch delivery
 
@@ -346,7 +346,7 @@ export const nudge = internalMutation({
   is useless without the provider key, except a Web Push endpoint without VAPID.
 - **Requests go only where they should.** Provider requests never follow
   redirects. Web Push endpoints must be https to a public host name (no IP
-  literals, `localhost` or private suffixes); DNS answers are not checked. A
+  literals, trailing dots, `localhost` or private suffixes); DNS answers are not checked. A
   custom sender fetches whatever address you store, so validate it there.
 - **Your app owns auth.** The optional `subjectRef` on `unregister` and
   `setDeviceStatus` guards against cross-user bugs in an honest host, not a
@@ -357,7 +357,7 @@ export const nudge = internalMutation({
 | Limit | Value |
 |---|---|
 | Devices per message | 100 (a subject's first 100 active devices) |
-| Messages per `sendBatch` | 100, and 1,000 deliveries in total |
+| Messages per `sendBatch` | 100, and 100 deliveries in total |
 | Payload | 4096 bytes (APNs, FCM), 3993 bytes plaintext (Web Push) |
 | `rawJson` | 4096 characters |
 | `ttlSeconds` | 0 to 2,419,200 (28 days), default 86,400 |

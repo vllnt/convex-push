@@ -59,8 +59,10 @@ src/testing/                   # test-only, outside src/component so codegen nev
   `retryActionsByDefault: false`: the component decides retries from the
   provider's answer, not from a throw. `maxParallelism` is pool-wide: only a
   live send passes it; a retry passes `undefined` so it never rewrites the pool.
-- **Transaction budgets.** `sendBatch` stops at 1,000 deliveries and `prune`
-  deletes about `batch` rows (max 4,000) per pass, inside Convex's write limits.
+- **Transaction budgets.** Each delivery costs several nested component calls,
+  so `sendBatch` stops at 100 deliveries, and `prune` deletes about `batch`
+  rows (max 1,000) plus up to 100 devices per pass. Numbers come from runs on a
+  local backend; `load-check` confirms them on hosted Convex.
 - **Scrub in its own transaction.** A finished delivery schedules
   `internal_mutations.scrub`, so recording it does not read its siblings.
 - **Retry decision in one place.** `applyOutcome` in `queue.ts` handles every

@@ -22,7 +22,7 @@ optional. A provider is on when its required variables are set.
 | `APNS_KEY_ID` | APNs | yes | The key's 10-character id |
 | `APNS_TEAM_ID` | APNs | yes | Your Apple team id |
 | `APNS_SANDBOX_KEY_P8`, `APNS_SANDBOX_KEY_ID` | APNs | no | A second key used for `environment: "sandbox"` apps |
-| `FCM_SERVICE_ACCOUNT_JSON` | FCM | yes | The service-account JSON (`project_id`, `client_email`, `private_key`, optional `private_key_id`, `token_uri`; a `token_uri` must be https on a `*.googleapis.com` host) |
+| `FCM_SERVICE_ACCOUNT_JSON` | FCM | yes | The service-account JSON (`project_id`, `client_email`, `private_key`, optional `private_key_id`). Its `token_uri` is ignored: the token exchange always goes to `https://oauth2.googleapis.com/token` |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` | Web Push | yes | Raw P-256 key pair, base64url (the form `web-push generate-vapid-keys` prints) |
 | `VAPID_SUBJECT` | Web Push | yes | `mailto:` or `https:` contact |
 
@@ -67,8 +67,9 @@ Registers or refreshes one device. Returns `{ deviceId, created }`.
 - `lastSeenAt` is refreshed on every call, so Apple's 410 timestamp can tell a
   later registration apart.
 - A Web Push `endpoint` must be `https` on the default port, with no
-  credentials, to a public host name: IP literals, `localhost` and private
-  suffixes (`.local`, `.internal`, `.lan`, `.home.arpa`) are refused with
+  credentials, to a public host name: IP literals, a trailing dot, `localhost`
+  and private suffixes (`.localhost`, `.local`, `.localdomain`, `.internal`,
+  `.intranet`, `.lan`, `.corp`, `.svc`, `.test`, `.arpa`) are refused with
   `INVALID_ADDRESS`. DNS answers are not checked.
 - Throws `UNKNOWN_APP` (appRef not in `apps`), `PLATFORM_MISMATCH` (address
   does not fit the app), `INVALID_ADDRESS`, `INVALID_ARGUMENT`.
@@ -116,8 +117,9 @@ would delay the send past the message's expiry.
 
 ### sendBatch(ctx, messages)
 
-Queues up to 100 messages and up to 1,000 deliveries in one transaction
-(deduplicated messages count zero). Over that it throws `INVALID_ARGUMENT` and
+Queues up to 100 messages and up to 100 deliveries in one transaction
+(deduplicated messages count zero; each delivery makes several nested component
+calls, and about 150 timed out on a local backend). Over that it throws `INVALID_ARGUMENT` and
 queues nothing; split the batch. Returns one result per message.
 
 ### status(ctx, messageId)
@@ -143,9 +145,11 @@ marked invalid. Returns `{ cancelled }`.
 Deletes messages older than `retentionMs` that also expired more than a day ago
 (so no send job is still on its way), with their deliveries; devices that are
 `invalid` and unseen for `retentionMs`; and expired cached tokens. `batch` is the
-number of rows one pass deletes (default and max 4,000; a pass finishes the
-message it started, and looks at up to 100 messages). It reschedules itself
-while there is more. Returns `{ deleted, more }`. A daily cron prunes with the
+number of message and delivery rows one pass deletes (default and max 1,000; a
+pass finishes the message it started and looks at the 100 oldest messages). A
+pass also deletes up to 100 invalid devices and expired tokens. It reschedules
+itself while there is more. With `retentionMs` under 29 days, a message with a
+long TTL holds back the messages created after it until it has expired. Returns `{ deleted, more }`. A daily cron prunes with the
 default 30 days.
 
 ## Extension contracts
@@ -185,8 +189,9 @@ queued ──► sent
 A retry stops at the attempt limit (keeping the last code, or `RETRY_LIMIT`) or
 when the next attempt would land after `expiresAt` (`TTL_EXPIRED`). Nothing is
 sent to a device that moved to another subject after the message was queued
-(`DEVICE_REASSIGNED`). Content is scrubbed in a separate transaction right after
-the last delivery finishes.
+(`DEVICE_REASSIGNED`). Content is scrubbed as soon as no delivery is queued: in
+the same transaction for `send` and `cancel`, and in a scheduled mutation right
+after a send job's result is recorded.
 
 ## Provider answers
 

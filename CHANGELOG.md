@@ -18,7 +18,7 @@ First canary. Delivery to real devices is not verified yet.
   messages), `unregister`,
   `setDeviceStatus`, `listDevices`.
 - Send queue: `send` and `sendBatch` (fan-out to up to 100 devices, up to
-  1,000 deliveries per batch, idempotency key, TTL, payload size check after
+  100 deliveries per batch, idempotency key, TTL, payload size check after
   `rawJson`), `status`, `listBySubject`, `cancel`, `prune` (row-budgeted, keeps
   a message until a day after it expires) and a daily prune cron.
 - Senders for APNs (ES256 provider token, HTTP/2), FCM HTTP v1 (RS256 assertion,
@@ -30,8 +30,8 @@ First canary. Delivery to real devices is not verified yet.
   `BadDeviceToken`/`DeviceTokenNotForTopic` burst breaker plus a per-device
   rate fuse (`@convex-dev/rate-limiter`).
 - Outbound safety: provider requests never follow redirects; Web Push
-  endpoints must be https to a public host name; a service account's
-  `token_uri` must be a `*.googleapis.com` host.
+  endpoints must be https to a public host name; the Google token exchange
+  always goes to `oauth2.googleapis.com` (a key file's `token_uri` is ignored).
 - Encrypted provider-token cache (AES-256-GCM, HKDF key from the private key),
   shared by concurrent senders.
 - Extension points: custom providers (`customSendArgs` → `sendResult`), the
