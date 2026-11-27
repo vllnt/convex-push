@@ -1,8 +1,9 @@
 # Spec: @vllnt/convex-push v0.1.0 (canary)
 
 **Status:** built, in review. **Date:** 2026-11-27.
-**Source:** the convex-push design doc, revision 2 (27 Nov 2026), converted into
-this spec, `README.md`, `docs/API.md`, `ROADMAP.md` and `llms.txt`.
+**Source:** the convex-push design doc, revision 2 (27 Nov 2026), held by the
+owner and not committed. Its content is converted into this spec, `README.md`,
+`docs/API.md`, `ROADMAP.md` and `llms.txt`; "the doc" below means it.
 
 ## Outcome
 
@@ -18,7 +19,7 @@ tokens. Hosts extend it with a custom provider, a delivery hook and `rawJson`.
 | `pnpm lint`, `pnpm typecheck`, `pnpm build` | green |
 | `pnpm test:coverage` | 100% statements, branches, functions, lines |
 | Behaviour tests: each sender result, a throw, retry to the limit and to expiry, invalidation, token cache and refresh, size after `rawJson`, a failing hook, a custom provider end to end | `example/convex/example.test.ts`, `src/component/component.test.ts`, `src/component/providers/providers.test.ts` |
-| No key, token, content or address stored in plaintext, returned by a query or logged | `example.test.ts` › provider tokens and secrets |
+| After sends, including error and retry paths: no key, JWT, access token or content left in plaintext in any table or scheduled-function argument of the component, its workpools or its rate limiter; no key, token, content or address returned by a query or logged (addresses are stored, since sending needs them) | `example.test.ts` › provider tokens and secrets |
 | Crypto against published vectors | `src/component/crypto/crypto.test.ts`, and again in a real Convex runtime (Proof 3) |
 | Example app mounts a built-in and a custom provider | `example/convex/convex.config.ts`, `example/convex/example.ts` |
 
@@ -95,6 +96,13 @@ One more observation: a job that was running when the backend process was
 stopped was marked failed by workpool on restart. The component counted it as a
 retry (`SENDER_ERROR`) and the second attempt ended `sent`.
 
+### Proof 5: the component's own cron runs — holds
+
+With `crons.ts` set to a 5-second interval for the check (then put back to 24
+hours), `convex logs --success` on the local backend showed
+`M(mutations:prune)` running every 5 seconds, twice per tick: once for each of
+the example's two mounts. No host code schedules it.
+
 ## What was not verified
 
 - **Delivery to real devices.** No Apple or Google credentials and no test
@@ -112,15 +120,19 @@ retry (`SENDER_ERROR`) and the second attempt ended `sent`.
 | Table | Fields | Indexes |
 |---|---|---|
 | `devices` | `subjectRef`, `appRef`, `address`, `addressHash`, `installRef?`, `locale?`, `status`, `invalidCode?`, `lastSeenAt` | `by_address_hash`, `by_subject_status`, `by_install`, `by_status_seen` |
-| `messages` | `to`, `title?`, `body?`, `data`, `options`, `overrides?`, `onDeliveryHandle?`, `idempotencyKey?`, `expiresAt`, `scrubbedAt?`, `maxAttempts`, `maxParallelism`, `scrub` | `by_idempotency_key`, `by_subject_created` |
-| `deliveries` | `messageId`, `deviceId`, `platform`, `provider?`, `senderHandle?`, `apns?`, `status`, `attempts`, `providerMessageId?`, `errorCode?`, `httpStatus?`, `nextAttemptAt?`, `sentAt?`, `updatedAt` | `by_message`, `by_device_created`, `by_status_updated` |
+| `messages` | `to`, `title?`, `body?`, `data`, `options`, `overrides?`, `onDeliveryHandle?`, `idempotencyKey?`, `expiresAt`, `scrubbedAt?`, `maxAttempts`, `scrub` | `by_idempotency_key`, `by_subject_created` |
+| `deliveries` | `messageId`, `deviceId`, `subjectRef`, `platform`, `provider?`, `senderHandle?`, `apns?`, `status`, `attempts`, `providerMessageId?`, `errorCode?`, `httpStatus?`, `nextAttemptAt?`, `sentAt?`, `updatedAt` | `by_message` |
 | `providerTokens` | `credentialRef`, `audience?`, `cipher`, `iv`, `mintedAt`, `refreshAfter`, `expiresAt` | `by_credential_audience` |
 
 Differences from the doc's schema:
 
-- `messages` also stores `maxAttempts`, `maxParallelism` and `scrub`: the
-  settings in force when the message was sent, so a retry uses them.
+- `messages` also stores `maxAttempts` and `scrub`: the settings in force when
+  the message was sent, so a retry uses them. `maxParallelism` is not stored:
+  it is a pool-wide workpool setting, so only a live send passes it.
 - `deliveries.apns` stores the APNs topic and environment chosen at fan-out.
+- `deliveries.subjectRef` stores the device's subject at fan-out; a device
+  reassigned since then ends `DEVICE_REASSIGNED` instead of being sent to.
+- `deliveries` has no status or device index: nothing queries by them in v0.1.
 - The doc's `by_created` index is Convex's built-in `by_creation_time`.
 
 ## Decisions assumed (owner to confirm)
@@ -140,7 +152,7 @@ The doc's open decisions, built as it recommends:
 Defaults and choices the doc marks proposed or leaves open:
 
 - Token reuse: APNs JWT 45 minutes (lifetime 60), Google access token
-  `min(50 min, lifetime / 2)`, VAPID JWT 12 hours (signed for 24 hours less one
+  `min(50 min, max(lifetime − 10 min, lifetime / 2))`, VAPID JWT 12 hours (signed for 24 hours less one
   minute), per push-service origin.
 - Defaults: TTL one day; priority `high` for visible, `normal` for silent;
   5 attempts; 10 sends in parallel per provider; 30-day retention; scrub on.
@@ -148,7 +160,21 @@ Defaults and choices the doc marks proposed or leaves open:
   APNs 5xx without `Retry-After` waits 15 minutes; 15 s request timeout.
 - Rate controls: 60 sends a minute per device (later sends delayed, not
   dropped); more than 20 APNs `BadDeviceToken` per app in 10 minutes pauses that
-  app (`APP_PAUSED`); only `BadDeviceToken` counts.
+  app (`APP_PAUSED`); `BadDeviceToken` and `DeviceTokenNotForTopic` count. A
+  send the fuse would delay past the message's expiry fails at once
+  (`TTL_EXPIRED`).
+- Transaction budgets: a subject fans out to its first 100 active devices
+  (more logs `message.device_cap`); `sendBatch` refuses more than 1,000
+  deliveries; `prune` deletes about `batch` rows per pass (default and max
+  4,000, 100 messages looked at) and keeps a message until a day after it
+  expires.
+- Outbound: provider requests never follow redirects; Web Push endpoints must
+  be https to a public host name (no IP literal, `localhost` or private suffix;
+  DNS answers not checked); `token_uri` must be on `*.googleapis.com`;
+  `collapseKey` and the APNs topic must be printable ASCII.
+- `lastSeenAt` is refreshed on every `register`, so Apple's 410 timestamp can
+  tell a later registration apart. A known `installRef` is reused only within
+  the same `appRef`.
 - A silent message is not refused as a whole: its Web Push deliveries fail with
   `SILENT_NOT_SUPPORTED`, the others send.
 - `ttlSeconds: 0` means "now or never": the message stays sendable for 30
@@ -160,9 +186,10 @@ Defaults and choices the doc marks proposed or leaves open:
   name is refused, so a stored value cannot call the component's own functions.
 - `convex-helpers` is a runtime dependency because `@convex-dev/workpool` 0.5
   requires it as a peer. Peer `convex@^1.47.0` follows workpool 0.5's peer range.
-- `publish.yml` keeps the `CANARY_ENABLED` repository-variable gate (as in
-  `convex-email`; the reference no longer has it) so nothing publishes until the
-  owner sets it.
+- `publish.yml` keeps a `CANARY_ENABLED` repository-variable gate (as in
+  `convex-email`; the reference no longer has it). A canary, from a push or a
+  manual run, publishes only while it is `true`. A stable release still
+  publishes from a pushed `vX.Y.Z` tag, which is a deliberate owner action.
 
 ## Gaps against the doc
 
@@ -172,6 +199,13 @@ Defaults and choices the doc marks proposed or leaves open:
   (built); (b) store retention in a component config row written by the client
   on each send; (c) drop the cron and require the host to schedule `prune`.
   Recommendation: (a) until a consumer needs another window, then (b).
+- **No sweeper for a delivery stuck `queued`.** If the workpool completion
+  callback ever failed for good, the delivery would stay `queued` and its
+  message unscrubbed. Convex retries the scheduled mutation; the scrub now runs
+  in its own transaction so the callback no longer reads sibling rows. Options:
+  (a) leave it (built); (b) a periodic sweep over queued deliveries past
+  `nextAttemptAt` plus a grace period. Recommendation: (b) after `load-check`
+  shows whether it ever happens.
 - **Real-device smoke tests and the 1,000-delivery load test** from the doc's
   build order are not done (no credentials or devices). They are the next
   roadmap items.
@@ -188,6 +222,8 @@ Defaults and choices the doc marks proposed or leaves open:
 | `@convex-dev/workpool` | yes | per-provider queues, `runAt` for delayed retries, completion callbacks |
 | `@convex-dev/rate-limiter` | yes | per-device fuse and per-app burst breaker |
 | `@convex-dev/action-retrier` | no | retries only thrown errors with its own backoff; cannot honour `Retry-After`, message expiry or the four-result contract |
+| `@convex-dev/expo-push-notifications` | no | the official push component sends through Expo's hosted relay, which holds the Apple and Google credentials; this package exists to send direct, with no relay |
+| `convex-helpers` | indirect | required peer of `@convex-dev/workpool` 0.5; no source file imports it. An exception to the fleet dependency policy, to record in the hub |
 
 ## Front-end tooling
 

@@ -25,7 +25,7 @@ src/
     ├── validators.ts          # every arg/return validator, the custom-sender and hook contracts
     ├── mutations.ts           # register, unregister, setDeviceStatus, send, sendBatch, cancel, prune
     ├── queries.ts             # status, listDevices, listBySubject; internal loadJob, loadToken
-    ├── internal_mutations.ts  # onSendComplete (workpool callback), storeToken, dropToken
+    ├── internal_mutations.ts  # onSendComplete (workpool callback), scrub, storeToken, dropToken
     ├── actions.ts             # internal deliver action: load job, send, return the outcome
     ├── crons.ts               # daily prune
     ├── registry.ts            # coded errors, ref and address checks, address hash, device view
@@ -54,9 +54,15 @@ src/testing/                   # test-only, outside src/component so codegen nev
 
 - **Plain `fetch` in the default runtime.** Components cannot hold Node
   actions. APNs over HTTP/2 works from a Convex action (see the spec's proof).
-- **One workpool per provider.** A slow or throttled provider cannot starve the
-  others. `retryActionsByDefault: false`: the component decides retries from the
-  provider's answer, not from a throw.
+- **One workpool per built-in provider** (custom providers share `customPool`).
+  A slow or throttled provider cannot starve the others.
+  `retryActionsByDefault: false`: the component decides retries from the
+  provider's answer, not from a throw. `maxParallelism` is pool-wide: only a
+  live send passes it; a retry passes `undefined` so it never rewrites the pool.
+- **Transaction budgets.** `sendBatch` stops at 1,000 deliveries and `prune`
+  deletes about `batch` rows (max 4,000) per pass, inside Convex's write limits.
+- **Scrub in its own transaction.** A finished delivery schedules
+  `internal_mutations.scrub`, so recording it does not read its siblings.
 - **Retry decision in one place.** `applyOutcome` in `queue.ts` handles every
   result: sent, invalid, failed, retry (attempt limit, expiry).
 - **Hook is scheduled, never inline.** A hook that throws cannot undo the
@@ -65,8 +71,12 @@ src/testing/                   # test-only, outside src/component so codegen nev
   `storeToken` keeps a fresh existing row so concurrent senders converge (Apple
   rejects frequent token changes).
 - **`invalid` is reversible.** The next registration restores the device. An APNs
-  `BadDeviceToken` burst per app pauses the app (wrong environment), via
-  `@convex-dev/rate-limiter`.
+  `BadDeviceToken`/`DeviceTokenNotForTopic` burst per app pauses the app (wrong
+  environment), via `@convex-dev/rate-limiter`.
+- **Deliveries record the subject.** A device reassigned after enqueue ends
+  `DEVICE_REASSIGNED` instead of receiving the old subject's message.
+- **Outbound requests stay put.** `providerFetch` never follows redirects; Web
+  Push endpoints must pass `isPublicHttpsUrl` (`registry.ts`).
 - **Addresses never leave the component** except in the send action
   (`loadJob` is internal).
 
@@ -96,8 +106,8 @@ a consumer asks for a web subscription helper.
   commit a key, token or real-looking credential.
 - Provider calls are tested against recorded response shapes with `fetch`
   stubbed. No test sends to a real provider.
-- Never put test-only code under `src/component/`: Convex codegen treats every
-  file there as a component module and deploys it. `pnpm test:package` fails if
+- Never put test helpers under `src/component/` (only `*.test.ts` files): Convex
+  codegen treats every other file there as a component module and deploys it. `pnpm test:package` fails if
   any `testing/` path ships.
 
 ## Generated code

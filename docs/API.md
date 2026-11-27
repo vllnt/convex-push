@@ -22,7 +22,7 @@ optional. A provider is on when its required variables are set.
 | `APNS_KEY_ID` | APNs | yes | The key's 10-character id |
 | `APNS_TEAM_ID` | APNs | yes | Your Apple team id |
 | `APNS_SANDBOX_KEY_P8`, `APNS_SANDBOX_KEY_ID` | APNs | no | A second key used for `environment: "sandbox"` apps |
-| `FCM_SERVICE_ACCOUNT_JSON` | FCM | yes | The service-account JSON (`project_id`, `client_email`, `private_key`, optional `private_key_id`, `token_uri`) |
+| `FCM_SERVICE_ACCOUNT_JSON` | FCM | yes | The service-account JSON (`project_id`, `client_email`, `private_key`, optional `private_key_id`, `token_uri`; a `token_uri` must be https on a `*.googleapis.com` host) |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` | Web Push | yes | Raw P-256 key pair, base64url (the form `web-push generate-vapid-keys` prints) |
 | `VAPID_SUBJECT` | Web Push | yes | `mailto:` or `https:` contact |
 
@@ -38,14 +38,15 @@ const push = new Push(components.push, {
   onDelivery: internal.pushHooks.onDelivery, // optional
   defaultTtlSeconds: 86_400, // default 1 day, max 28 days
   maxAttempts: 5, // per delivery, 1 to 20
-  maxParallelism: 10, // concurrent sends per provider pool, 1 to 100
+  maxParallelism: 10, // concurrent sends per provider pool, 1 to 100; pool-wide, the last send's value wins
   scrubContent: true, // erase title, body, data and overrides once every delivery has finished
   retentionMs: 30 * 86_400_000, // used by prune()
 });
 ```
 
 `apps` maps your `appRef` names to `appConfig`:
-`{ platform: "apns", topic, environment: "production" | "sandbox" }`,
+`{ platform: "apns", topic, environment: "production" | "sandbox" }` (`topic`
+is printable ASCII without spaces),
 `{ platform: "fcm" }`, `{ platform: "webpush" }` or
 `{ platform: "custom", provider }`. The settings travel with each call, so a
 change takes effect on the next send. `RunMutationCtx` is any context with
@@ -59,10 +60,16 @@ Registers or refreshes one device. Returns `{ deviceId, created }`.
 
 - The same address (by hash) updates its row; it moves to `subjectRef` if
   another subject held it.
-- Otherwise a known `installRef` replaces that row's address (token rotation).
+- Otherwise a known `installRef` for the same `appRef` replaces that row's
+  address (token rotation).
 - An `invalid` device becomes `active` again. A `disabled` device stays
   disabled unless it moves to a new subject.
-- `lastSeenAt` is written when something changed, or at most once a day.
+- `lastSeenAt` is refreshed on every call, so Apple's 410 timestamp can tell a
+  later registration apart.
+- A Web Push `endpoint` must be `https` on the default port, with no
+  credentials, to a public host name: IP literals, `localhost` and private
+  suffixes (`.local`, `.internal`, `.lan`, `.home.arpa`) are refused with
+  `INVALID_ADDRESS`. DNS answers are not checked.
 - Throws `UNKNOWN_APP` (appRef not in `apps`), `PLATFORM_MISMATCH` (address
   does not fit the app), `INVALID_ADDRESS`, `INVALID_ARGUMENT`.
 
@@ -87,10 +94,10 @@ Queues one message. Returns `{ messageId, deliveries, deduplicated }`.
 
 | Field | Type | Notes |
 |---|---|---|
-| `to` | `{ subjectRef }` or `{ deviceIds }` | Every active device of the subject, or up to 100 named devices (unknown or inactive ids are skipped) |
+| `to` | `{ subjectRef }` or `{ deviceIds }` | The subject's active devices (the first 100 registered; more logs `message.device_cap`), or up to 100 named devices (unknown or inactive ids are skipped) |
 | `title`, `body` | `string?` | Up to 1024 characters. Neither means a silent push |
 | `data` | `Record<string, string \| number \| boolean>?` | Up to 100 keys. `aps`, `from`, `notification`, `message_type`, `collapse_key`, `google.*`, `gcm.*` are reserved. FCM receives values as strings |
-| `collapseKey` | `string?` | Up to 64 bytes. APNs `apns-collapse-id`, FCM `collapse_key`, Web Push `Topic` (hashed). Default: the message id on APNs and Web Push, so a duplicate send replaces the first |
+| `collapseKey` | `string?` | 1 to 64 printable ASCII characters. APNs `apns-collapse-id`, FCM `collapse_key`, Web Push `Topic` (hashed). Default: the message id on APNs and Web Push, so a duplicate send replaces the first |
 | `ttlSeconds` | `number?` | 0 to 2,419,200. 0 means "now or never" (sendable for 30 seconds) |
 | `priority` | `"high" \| "normal"?` | Default `high` for visible, `normal` for silent |
 | `badge`, `sound`, `category` | `number?`, `string?`, `string?` | APNs `aps` fields; `sound` also on FCM Android |
@@ -104,11 +111,14 @@ its limit after `rawJson` is merged). A throw rolls the whole send back.
 Some deliveries end at once, without a send: `APP_NOT_CONFIGURED` (the device's
 `appRef` is not in `apps`, or no longer matches), `PROVIDER_NOT_CONFIGURED`
 (keys or custom sender missing), `SILENT_NOT_SUPPORTED` (silent Web Push) and
-`APP_PAUSED` (see below).
+`APP_PAUSED` (see below), and `TTL_EXPIRED` when the per-device rate fuse
+would delay the send past the message's expiry.
 
 ### sendBatch(ctx, messages)
 
-Queues up to 100 messages in one transaction. Returns one result per message.
+Queues up to 100 messages and up to 1,000 deliveries in one transaction
+(deduplicated messages count zero). Over that it throws `INVALID_ARGUMENT` and
+queues nothing; split the batch. Returns one result per message.
 
 ### status(ctx, messageId)
 
@@ -125,14 +135,18 @@ per status (`messageSummary[]`; `limit` default 20, max 100).
 ### cancel(ctx, messageId)
 
 Ends every queued delivery as `failed` with `CANCELLED`. A job already running
-may still send. Returns `{ cancelled }`.
+may still send; if its answer says the device is dead, the device is still
+marked invalid. Returns `{ cancelled }`.
 
 ### prune(ctx, { batch? })
 
-Deletes messages older than `retentionMs` with their deliveries, devices that
-are `invalid` and unseen for that long, and expired cached tokens. Reschedules
-itself while a batch (default 200, max 500) comes back full. Returns
-`{ deleted, more }`. A daily cron prunes with the default 30 days.
+Deletes messages older than `retentionMs` that also expired more than a day ago
+(so no send job is still on its way), with their deliveries; devices that are
+`invalid` and unseen for `retentionMs`; and expired cached tokens. `batch` is the
+number of rows one pass deletes (default and max 4,000; a pass finishes the
+message it started, and looks at up to 100 messages). It reschedules itself
+while there is more. Returns `{ deleted, more }`. A daily cron prunes with the
+default 30 days.
 
 ## Extension contracts
 
@@ -148,7 +162,10 @@ attempt, messageId, deliveryId }` and returns one of:
 
 A throw or timeout counts as `retry` with `SENDER_ERROR`. Any other value fails
 the delivery with `SENDER_BAD_RESULT`. A missing code becomes `INVALID`,
-`FAILED` or, at the attempt limit, `RETRY_LIMIT`.
+`FAILED` or, at the attempt limit, `RETRY_LIMIT`. `delayMs` is bounded to one
+second..one day; `providerMessageId` and `code` are stored up to 256
+characters. Every custom provider shares one pool (`customPool`), so a slow
+sender holds slots the others could use.
 
 ### Delivery hook: `deliveryEvent`
 
@@ -161,12 +178,15 @@ delivery. It is scheduled, never inline.
 ```
 queued ──► sent
    │  ├──► invalid   (device marked invalid unless it registered after the provider's timestamp)
-   │  └──► failed    (final error, attempt limit, expiry, cancel)
+   │  └──► failed    (final error, attempt limit, expiry, cancel, device moved to another subject)
    └─ retry: queued again at now + delay (Retry-After, or 1 min doubling to 30 min)
 ```
 
 A retry stops at the attempt limit (keeping the last code, or `RETRY_LIMIT`) or
-when the next attempt would land after `expiresAt` (`TTL_EXPIRED`).
+when the next attempt would land after `expiresAt` (`TTL_EXPIRED`). Nothing is
+sent to a device that moved to another subject after the message was queued
+(`DEVICE_REASSIGNED`). Content is scrubbed in a separate transaction right after
+the last delivery finishes.
 
 ## Provider answers
 
@@ -183,11 +203,14 @@ when the next attempt would land after `expiresAt` (`TTL_EXPIRED`).
 | Web Push | 2xx | `sent`, `providerMessageId` = `Location` |
 | Web Push | 404, 410 | `invalid` (`NOT_FOUND`, `GONE`) |
 | Web Push | 413 | `failed` (`PAYLOAD_TOO_LARGE`) |
+| Web Push | 401, 403 | `retry` (`HTTP_401`, `HTTP_403`), cached VAPID JWT dropped |
 | Web Push | 429, 5xx | `retry` |
 | Any | network error, 15 s timeout | `retry` (`NETWORK_ERROR`, `TIMEOUT`) |
+| Any | 3xx | not followed; handled as that provider's other answers |
 
 Other answers end `failed` with the provider's reason. A burst of more than 20
-APNs `BadDeviceToken` answers for one `appRef` in 10 minutes pauses that app:
+APNs `BadDeviceToken` or `DeviceTokenNotForTopic` answers for one `appRef` in 10
+minutes pauses that app:
 its deliveries fail with `APP_PAUSED` until the window ends, and the devices are
 not marked invalid (this is how a sandbox/production mix-up shows).
 
@@ -198,7 +221,7 @@ Thrown as `ConvexError({ code, message })`; `ERROR_CODES` lists them.
 | Code | When |
 |---|---|
 | `INVALID_ARGUMENT` | A ref, limit, option or setting out of range |
-| `INVALID_ADDRESS` | A token, endpoint or key that cannot be right (whitespace, not https, wrong key length) |
+| `INVALID_ADDRESS` | A token, endpoint or key that cannot be right (whitespace, not https to a public host, wrong key length) |
 | `INVALID_DATA` | Reserved, too many, too long or non-finite `data` |
 | `INVALID_RAW_JSON` | `rawJson` is not a JSON object or is over 4096 characters |
 | `PAYLOAD_TOO_LARGE` | A provider's payload is over its limit after the merge |
@@ -217,5 +240,14 @@ provider reasons (`BadDeviceToken`, `UNREGISTERED`, …) are stored as sent.
   audience are the additional data.
 - Queries return no address, token or content. Logs carry ids, platforms,
   statuses and codes only.
+- Tests check that after a send (including error and retry paths) no key, JWT,
+  access token or message content is left in plaintext in any table or
+  scheduled-function argument of the component and its child components.
+  Device addresses are stored, since sending needs them.
+- Provider requests never follow redirects, so credentials only go to the URL
+  given. Web Push endpoints are limited to public https host names (see
+  `register`); custom senders fetch whatever address you store, so check those
+  in your own sender.
 - Stored function handles must have the `function://` form; a plain function
-  name is refused.
+  name is refused. This is a form check, not a security boundary: the host
+  passes its own handles and is trusted.

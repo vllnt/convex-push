@@ -39,15 +39,18 @@ const status = await push.status(ctx, messageId);
   (RFC 8030/8291/8292) from a default-runtime action. UnifiedPush endpoints
   speak Web Push.
 - **Device registry.** One row per device address, deduplicated by a hash of
-  the address. A rotated token with the same `installRef` replaces its row. A
-  device moves to a new subject when another user registers it.
+  the address. A rotated token with the same `installRef` (same app) replaces
+  its row. A device moves to a new subject when another user registers it, and
+  messages queued for the old subject are not sent to it.
 - **Durable queue.** One delivery per device. One [workpool](https://www.convex.dev/components/workpool)
-  per provider, so a slow provider cannot starve the others.
+  per built-in provider, so a slow provider cannot starve the others (custom
+  providers share one pool).
 - **Retries that follow the provider.** Exponential backoff from one minute,
   `Retry-After` honoured, stop at the attempt limit or at the message's expiry.
 - **Dead-device cleanup.** Provider "gone" answers mark the device `invalid`;
-  the next registration restores it. A burst of APNs `BadDeviceToken` for one
-  app pauses that app instead of killing every device (wrong environment).
+  the next registration restores it. A burst of APNs `BadDeviceToken` or
+  `DeviceTokenNotForTopic` for one app pauses that app instead of killing every
+  device (wrong environment or topic).
 - **Cached provider tokens.** APNs and VAPID JWTs and the Google access token
   are reused, stored encrypted (AES-256-GCM, key derived from your private key,
   never stored).
@@ -258,7 +261,7 @@ export const webhook = internalAction({
 | The sender returns | The component then |
 |---|---|
 | `sent` (optional `providerMessageId`) | Marks the delivery sent |
-| `retry` (optional `delayMs`) | Queues it again, until the attempt limit or the message's expiry |
+| `retry` (optional `delayMs`, bounded to 1 s..1 day) | Queues it again, until the attempt limit or the message's expiry |
 | `invalid` | Marks the delivery and the device invalid; the next registration restores the device |
 | `failed` | Marks the delivery failed, no retry |
 | Throws or times out | Counts as `retry` with code `SENDER_ERROR` |
@@ -341,6 +344,10 @@ export const nudge = internalMutation({
   Convex after it wakes. Web Push payloads are encrypted end to end.
 - **Device tokens are stored in the clear,** because sending needs them. A token
   is useless without the provider key, except a Web Push endpoint without VAPID.
+- **Requests go only where they should.** Provider requests never follow
+  redirects. Web Push endpoints must be https to a public host name (no IP
+  literals, `localhost` or private suffixes); DNS answers are not checked. A
+  custom sender fetches whatever address you store, so validate it there.
 - **Your app owns auth.** The optional `subjectRef` on `unregister` and
   `setDeviceStatus` guards against cross-user bugs in an honest host, not a
   hostile one.
@@ -349,14 +356,14 @@ export const nudge = internalMutation({
 
 | Limit | Value |
 |---|---|
-| Devices per message | 100 |
-| Messages per `sendBatch` | 100 |
+| Devices per message | 100 (a subject's first 100 active devices) |
+| Messages per `sendBatch` | 100, and 1,000 deliveries in total |
 | Payload | 4096 bytes (APNs, FCM), 3993 bytes plaintext (Web Push) |
 | `rawJson` | 4096 characters |
 | `ttlSeconds` | 0 to 2,419,200 (28 days), default 86,400 |
 | Attempts per delivery | default 5, at most 20 |
 | Sends to one device | 60 per minute, then delayed |
-| Retention | 30 days by the daily prune; `prune()` uses the client's `retentionMs` |
+| Retention | 30 days by the daily prune; `prune()` uses the client's `retentionMs`. A message is kept until a day after it expires |
 
 ## Testing your app
 
