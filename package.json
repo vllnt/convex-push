@@ -108,8 +108,7 @@
     "apns",
     "fcm",
     "web-push",
-    "vapid",
-    "unifiedpush"
+    "vapid"
   ],
   "pnpm": {
     "minimumReleaseAge": 10080,
