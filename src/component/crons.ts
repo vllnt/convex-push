@@ -13,4 +13,5 @@ crons.interval("push:prune", { hours: 24 }, api.mutations.prune, {
   batch: DEFAULT_PRUNE_BATCH,
 });
 
+/** The component's cron jobs. */
 export default crons;

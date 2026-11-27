@@ -11,6 +11,7 @@ import {
   platform,
 } from "./validators.js";
 
+/** The component's four tables. */
 export default defineSchema({
   /** One row per app install: the device registry. */
   devices: defineTable({
@@ -42,7 +43,6 @@ export default defineSchema({
     expiresAt: v.number(),
     scrubbedAt: v.optional(v.number()),
     maxAttempts: v.number(),
-    maxParallelism: v.number(),
     scrub: v.boolean(),
   })
     .index("by_idempotency_key", ["idempotencyKey"])
@@ -52,6 +52,8 @@ export default defineSchema({
   deliveries: defineTable({
     messageId: v.id("messages"),
     deviceId: v.id("devices"),
+    /** The device's subject when the message was sent; a device that moved since is not sent to. */
+    subjectRef: v.string(),
     platform: platform,
     provider: v.optional(v.string()),
     senderHandle: v.optional(v.string()),
@@ -65,9 +67,7 @@ export default defineSchema({
     sentAt: v.optional(v.number()),
     updatedAt: v.number(),
   })
-    .index("by_message", ["messageId"])
-    .index("by_device_created", ["deviceId"])
-    .index("by_status_updated", ["status", "updatedAt"]),
+    .index("by_message", ["messageId"]),
 
   /** Shared cache of short-lived provider tokens. Ciphertext only. */
   providerTokens: defineTable({

@@ -37,17 +37,41 @@ function checkPrintable(field: string, value: string, max: number): void {
   }
 }
 
-function isHttpsUrl(value: string): boolean {
+/** Host names that only resolve inside a machine or a private network. */
+const PRIVATE_HOST = /(^localhost$)|\.(localhost|local|internal|lan|home\.arpa)$/;
+
+/**
+ * Whether a URL is https on the default port, with no credentials, to a public
+ * host name. IP literals and private names are refused, so a registered
+ * endpoint cannot point the send action at the deployment's own network.
+ * DNS answers are not checked (a public name may still resolve privately).
+ * @param value - The URL.
+ * @returns Whether it may be used as a Web Push endpoint.
+ */
+export function isPublicHttpsUrl(value: string): boolean {
+  let url: URL;
   try {
-    return new URL(value).protocol === "https:";
+    url = new URL(value);
   } catch {
     return false;
   }
+  const host = url.hostname.toLowerCase();
+  const ipLiteral = host.startsWith("[") || /^[\d.]+$/.test(host);
+  return (
+    url.protocol === "https:" &&
+    url.port === "" &&
+    url.username === "" &&
+    url.password === "" &&
+    host.includes(".") &&
+    !ipLiteral &&
+    !PRIVATE_HOST.test(host)
+  );
 }
 
 /**
- * Validate a device address. Web Push endpoints must be https URLs and carry a
- * 65-byte P-256 key and a 16-byte auth secret.
+ * Validate a device address. Web Push endpoints must be https URLs to a public
+ * host name (see `isPublicHttpsUrl`) and carry a 65-byte P-256 key and a
+ * 16-byte auth secret.
  * @param address - The address to check.
  */
 export function checkAddress(address: DeviceAddress): void {
@@ -59,8 +83,8 @@ export function checkAddress(address: DeviceAddress): void {
     }
     case "webpush": {
       checkPrintable("endpoint", address.endpoint, MAX_ENDPOINT_LENGTH);
-      if (!isHttpsUrl(address.endpoint)) {
-        fail("INVALID_ADDRESS", "endpoint must be an https URL");
+      if (!isPublicHttpsUrl(address.endpoint)) {
+        fail("INVALID_ADDRESS", "endpoint must be an https URL to a public host name, on the default port");
       }
       if (base64Decode(address.p256dh)?.length !== 65 || base64Decode(address.auth)?.length !== 16) {
         fail("INVALID_ADDRESS", "p256dh must be a 65-byte P-256 key and auth a 16-byte secret");

@@ -4,7 +4,7 @@ import type { FunctionHandle } from "convex/server";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { generateP8, generateRsa, generateSubscription, generateVapid } from "../../src/testing/fixtures.js";
 import testSupport, { register } from "../../src/test.js";
-import { registerForTests } from "../../src/testing/register.js";
+import { registerForTests, type InspectedMount } from "../../src/testing/register.js";
 import { api } from "./_generated/api.js";
 import schema from "./schema.js";
 
@@ -77,10 +77,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+let mounts: InspectedMount[] = [];
+
 function setup() {
   const t = convexTest(schema, modules);
-  registerForTests(t, "push");
-  registerForTests(t, "pushPartner");
+  mounts = [...registerForTests(t, "push"), ...registerForTests(t, "pushPartner")];
   return t;
 }
 type T = ReturnType<typeof setup>;
@@ -98,13 +99,20 @@ async function drain(t: T): Promise<void> {
   throw new Error("scheduled work did not settle");
 }
 
-function isQueryHandle(h: string): h is FunctionHandle<"query", Record<string, never>, string> {
+function isQueryHandle(h: string): h is FunctionHandle<"query", { tables: string[] }, string> {
   return h.startsWith("function://");
 }
+/** Every row of one mount's tables and its scheduled functions, as JSON. */
 async function dumpTables(t: T, mount = "push"): Promise<string> {
   const handle = `function://${mount};testing/inspect:dumpTables`;
-  if (!isQueryHandle(handle)) throw new Error("bad handle");
-  return t.run((ctx) => ctx.runQuery(handle, {}));
+  const tables = mounts.find((m) => m.mount === mount)?.tables;
+  if (!isQueryHandle(handle) || !tables) throw new Error(`no inspector for ${mount}`);
+  return t.run((ctx) => ctx.runQuery(handle, { tables }));
+}
+/** The dumps of every mount: both components, their workpools and rate limiters. */
+async function dumpAll(t: T): Promise<string> {
+  const dumps = await Promise.all(mounts.map(async (m) => `${m.mount}: ${await dumpTables(t, m.mount)}`));
+  return dumps.join("\n");
 }
 
 const apns = (n: number) => ({ platform: "apns" as const, token: n.toString(16).padStart(64, "a") });
@@ -157,6 +165,8 @@ describe("device registry", () => {
     expect(await t.query(api.example.listDevices, { subjectRef: "u1" })).toHaveLength(1);
     const c = await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "android", address: fcm(3) });
     expect(c.created).toBe(true);
+    const otherApp = await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "web", address: web(1), installRef: "install-1" });
+    expect(otherApp.created).toBe(true);
   });
 
   test("a changed installRef or locale updates the row", async () => {
@@ -167,18 +177,15 @@ describe("device registry", () => {
     expect((await t.query(api.example.listDevices, { subjectRef: "u1" }))[0]).toMatchObject({ locale: "de", installRef: "i-2" });
   });
 
-  test("lastSeenAt is refreshed at most once a day", async () => {
+  test("lastSeenAt is refreshed on every registration", async () => {
     const t = setup();
     const { deviceId } = await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "web", address: web(1) });
     const [before] = await t.query(api.example.listDevices, { subjectRef: "u1" });
-    vi.advanceTimersByTime(3_600_000);
-    await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "web", address: web(1) });
-    expect((await t.query(api.example.listDevices, { subjectRef: "u1" }))[0]?.lastSeenAt).toBe(before?.lastSeenAt);
-    vi.advanceTimersByTime(86_400_000);
+    vi.advanceTimersByTime(60_000);
     await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "web", address: web(1) });
     const [after] = await t.query(api.example.listDevices, { subjectRef: "u1" });
     expect(after?.deviceId).toBe(deviceId);
-    expect(after?.lastSeenAt).toBeGreaterThan(before?.lastSeenAt ?? 0);
+    expect(after?.lastSeenAt).toBe((before?.lastSeenAt ?? 0) + 60_000);
   });
 
   test("disabled stays disabled for the same subject, resets on reassignment; status filter", async () => {
@@ -372,6 +379,17 @@ describe("sending through the built-in providers and a custom provider", () => {
     );
   });
 
+  test("a subject fans out to its first 100 devices; sendBatch refuses more than 1,000 deliveries", async () => {
+    const t = setup();
+    for (let i = 0; i < 101; i++) await t.mutation(api.example.registerDevice, { subjectRef: "big", appRef: "android", address: fcm(i) });
+    const many = Array.from({ length: 11 }, () => "big");
+    const deduped = await t.mutation(api.example.sendBatch, { subjectRefs: many, title: "Hi", idempotencyKey: "once" });
+    expect(deduped.map((r) => r.deliveries)).toEqual(Array.from({ length: 11 }, () => 100));
+    expect(deduped.filter((r) => r.deduplicated)).toHaveLength(10);
+    expect(logs.join("\n")).toContain("message.device_cap");
+    await expect(t.mutation(api.example.sendBatch, { subjectRefs: many, title: "Hi" })).rejects.toThrow(/more than 1000 deliveries/);
+  }, 60_000);
+
   test("listBySubject is newest first with a limit", async () => {
     const t = setup();
     const first = await t.mutation(api.example.send, { subjectRef: "u1", title: "1" });
@@ -539,13 +557,13 @@ describe("retries, expiry and dead devices", () => {
     expect((await t.query(api.example.listDevices, { subjectRef: "u1", status: "invalid" })).length).toBe(2);
   });
 
-  test("a burst of BadDeviceToken for one APNs app pauses that app instead of killing every device", async () => {
+  test("a burst of BadDeviceToken or DeviceTokenNotForTopic for one APNs app pauses that app instead of killing every device", async () => {
     /** The limiter opens a fixed window at a random offset; pin it so the window spans the whole test. */
     vi.spyOn(Math, "random").mockReturnValue(0);
     const t = setup();
     for (let i = 0; i < 21; i++) {
       await t.mutation(api.example.registerDevice, { subjectRef: `u${String(i)}`, appRef: "ios", address: apns(i) });
-      respond("api.push.apple.com", Response.json({ reason: "BadDeviceToken" }, { status: 400 }));
+      respond("api.push.apple.com", Response.json({ reason: i % 2 === 0 ? "BadDeviceToken" : "DeviceTokenNotForTopic" }, { status: 400 }));
     }
     for (let i = 0; i < 21; i++) await t.mutation(api.example.send, { subjectRef: `u${String(i)}`, title: "Hi" });
     await drain(t);
@@ -557,6 +575,16 @@ describe("retries, expiry and dead devices", () => {
     const status = await statusOf(t, next.messageId);
     expect(status.deliveries[0]).toMatchObject({ status: "failed", errorCode: "APP_PAUSED" });
     expect(logs.join("\n")).toContain("app.paused");
+  });
+
+  test("a device that moves to another subject after enqueue is not sent the first subject's message", async () => {
+    const t = setup();
+    await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "android", address: fcm(1) });
+    const sent = await t.mutation(api.example.send, { subjectRef: "u1", title: "For u1 only" });
+    await t.mutation(api.example.registerDevice, { subjectRef: "u2", appRef: "android", address: fcm(1) });
+    await drain(t);
+    expect((await statusOf(t, sent.messageId)).deliveries[0]).toMatchObject({ status: "failed", errorCode: "DEVICE_REASSIGNED" });
+    expect(hits("fcm.googleapis.com")).toBe(0);
   });
 
   test("a device disabled after enqueue is skipped; a device removed after enqueue is gone", async () => {
@@ -578,6 +606,15 @@ describe("retries, expiry and dead devices", () => {
     for (let i = 0; i < 61; i++) last = (await t.mutation(api.example.send, { deviceIds: [deviceId], title: String(i) })).messageId;
     const delayed = (await statusOf(t, last)).deliveries[0];
     expect(delayed?.nextAttemptAt).toBeGreaterThan(Date.now());
+  });
+
+  test("a send the fuse would delay past the message's expiry fails at once with TTL_EXPIRED", async () => {
+    const t = setup();
+    await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "desktop", address: hook(1) });
+    const results = await t.mutation(api.example.sendBatch, { subjectRefs: Array.from({ length: 91 }, () => "u1"), title: "Hi", ttlSeconds: 0 });
+    const codes = await Promise.all(results.map(async (r) => (await statusOf(t, r.messageId)).deliveries[0]?.errorCode));
+    expect(codes.slice(0, 89).every((c) => c === undefined)).toBe(true);
+    expect(codes.slice(89)).toEqual(["TTL_EXPIRED", "TTL_EXPIRED"]);
   });
 });
 
@@ -633,15 +670,20 @@ describe("cancel, scrub and prune", () => {
     expect(kept.deliveries).toBe(1);
   });
 
-  test("prune deletes old messages, deliveries, long-invalid devices and expired tokens, in batches", async () => {
+  test("prune deletes old expired messages, deliveries, long-invalid devices and expired tokens, in batches", async () => {
     const t = setup();
     await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "android", address: fcm(1), partner: true });
-    await t.mutation(api.example.send, { subjectRef: "u1", title: "1", partner: true });
-    await t.mutation(api.example.send, { subjectRef: "u1", title: "2", partner: true });
-    vi.advanceTimersByTime(5000);
-    expect(await t.mutation(api.example.prune, { partner: true, batch: 1 })).toEqual({ deleted: 2, more: true });
+    await t.mutation(api.example.send, { subjectRef: "u1", title: "1", ttlSeconds: 60, partner: true });
+    await t.mutation(api.example.send, { subjectRef: "u1", title: "2", ttlSeconds: 60, partner: true });
     await drain(t);
-    expect(await dumpTables(t, "pushPartner")).toMatch(/"messages":\[\]/);
+    vi.advanceTimersByTime(60_000 + 86_400_000);
+    await t.mutation(api.example.send, { subjectRef: "u1", title: "live", partner: true });
+    vi.advanceTimersByTime(5000);
+    expect(await t.mutation(api.example.prune, { partner: true, batch: 3 })).toEqual({ deleted: 3, more: true });
+    await drain(t);
+    const partnerLeft: Record<string, { title?: string }[]> = JSON.parse(await dumpTables(t, "pushPartner"));
+    expect(partnerLeft.messages?.map((m) => m.title)).toEqual(["live"]);
+    expect(await t.mutation(api.example.prune, { partner: true, batch: 1 })).toEqual({ deleted: 0, more: false });
     await expect(t.mutation(api.example.prune, { partner: true, batch: 0 })).rejects.toThrow(/batch/);
 
     await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "ios", address: apns(1) });
@@ -652,7 +694,8 @@ describe("cancel, scrub and prune", () => {
     vi.advanceTimersByTime(31 * 86_400_000);
     const pruned = await t.mutation(api.example.prune, {});
     expect(pruned.more).toBe(false);
-    expect(await dumpTables(t)).toBe('{"devices":[],"messages":[],"deliveries":[],"providerTokens":[]}');
+    const left: Record<string, unknown[]> = JSON.parse(await dumpTables(t));
+    expect([left.devices, left.messages, left.deliveries, left.providerTokens]).toEqual([[], [], [], []]);
   });
 
   test("the daily cron prunes with the default retention", async () => {
@@ -696,21 +739,34 @@ describe("provider tokens and secrets", () => {
     expect(hits("fcm.googleapis.com")).toBe(3);
   });
 
-  test("no key, token or content is stored in plaintext, returned by a query, or logged", async () => {
+  test("no key, token or content is left in any table or scheduled job, returned by a query, or logged", async () => {
     const t = setup();
     const d = await registerAll(t);
+    respond("api.push.apple.com", new Response(null, { status: 503 }));
+    respond("fcm.googleapis.com", Response.json({ error: { status: "UNAUTHENTICATED" } }, { status: 401 }));
+    respond("push.example", new Response("down", { status: 500 }));
+    respond("hook.example", new Error("connection reset"));
     const sent = await t.mutation(api.example.send, { subjectRef: "u1", title: "Private title", body: "Private body", data: { privateKey: "private-value" } });
     await drain(t);
+    expect((await statusOf(t, sent.messageId)).deliveries.map((x) => [x.status, x.attempts])).toEqual([
+      ["sent", 2],
+      ["sent", 2],
+      ["sent", 2],
+      ["sent", 2],
+    ]);
     const jwt = new Headers(calls.find((c) => c.url.host === "api.push.apple.com")?.init.headers).get("authorization")?.replace("bearer ", "") ?? "";
     const vapidJwt = /t=([^,]+)/.exec(new Headers(calls.find((c) => c.url.host === "push.example")?.init.headers).get("authorization") ?? "")?.[1] ?? "";
     expect(jwt.length).toBeGreaterThan(20);
     expect(vapidJwt.length).toBeGreaterThan(20);
-    const secrets = [keys.p8.split("\n")[1] ?? "", keys.rsa.split("\n")[1] ?? "", keys.vapidPrivate, ACCESS_TOKEN, jwt, vapidJwt];
+    const pemLines = [keys.p8, keys.rsa].flatMap((pem) => pem.split("\n")).filter((line) => line.length > 0 && !line.startsWith("-----"));
+    const secrets = [...pemLines, keys.vapidPrivate, ACCESS_TOKEN, jwt, vapidJwt];
     const content = ["Private title", "Private body", "private-value"];
     const addresses = [apns(1).token, fcm(1).token, web(1).endpoint, hook(1).address];
-    const stored = await dumpTables(t);
-    for (const s of secrets) expect(stored).not.toContain(s);
-    expect(stored).toMatch(/"providerTokens":\[\{.*"cipher"/);
+    const stored = await dumpAll(t);
+    expect(mounts.map((m) => m.mount)).toContain("push/apnsPool");
+    expect(stored).toMatch(/push\/apnsPool: .*"fnArgs":\{"deliveryId"/);
+    for (const s of [...secrets, ...content]) expect(stored).not.toContain(s);
+    expect(await dumpTables(t)).toMatch(/"providerTokens":\[\{.*"cipher"/);
     const returned = JSON.stringify([
       await t.query(api.example.status, { messageId: sent.messageId }),
       await t.query(api.example.listDevices, { subjectRef: "u1" }),

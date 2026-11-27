@@ -7,6 +7,7 @@ import type { PushEnv } from "./providers/keys.js";
 import type { PushContent } from "./providers/payload.js";
 import type { TokenCache } from "./providers/token_cache.js";
 import { sendWebPush } from "./providers/web_push.js";
+import { clampDelay } from "./providers/http.js";
 import type { CustomSendArgs, DeviceAddress, SendResult } from "./validators.js";
 
 /** What the send action loads for one queued delivery. */
@@ -23,7 +24,8 @@ export interface Job {
   data: PushContent["data"];
   options: PushContent["options"];
   overrides?: PushContent["overrides"];
-  device: { status: "active" | "disabled" | "invalid"; address: DeviceAddress } | null;
+  /** `reassigned`: the device moved to another subject after the message was sent. */
+  device: { status: "active" | "disabled" | "invalid"; address: DeviceAddress; reassigned: boolean } | null;
 }
 
 /** Everything a sender needs besides the job. */
@@ -63,7 +65,8 @@ export function parseSendResult(value: unknown): SendResult | null {
       return { status: "sent", providerMessageId: text("providerMessageId"), httpStatus: count("httpStatus") };
     }
     case "retry": {
-      return { status: "retry", code: text("code"), delayMs: count("delayMs"), httpStatus: count("httpStatus") };
+      const delayMs = count("delayMs");
+      return { status: "retry", code: text("code"), delayMs: delayMs === undefined ? undefined : clampDelay(delayMs), httpStatus: count("httpStatus") };
     }
     case "invalid": {
       return { status: "invalid", code: text("code"), httpStatus: count("httpStatus"), invalidSince: count("invalidSince") };
@@ -100,7 +103,8 @@ async function sendCustom(job: Job, address: Extract<DeviceAddress, { platform: 
 
 /**
  * Send one queued delivery with the right sender. Nothing is sent after the
- * message expires or to a device that is no longer active.
+ * message expires, to a device that is no longer active, or to a device that
+ * moved to another subject since the message was sent.
  * @param job - The delivery, its message content and its device.
  * @param deps - Env, token cache, clock and the custom-sender runner.
  * @returns The sender result.
@@ -108,6 +112,7 @@ async function sendCustom(job: Job, address: Extract<DeviceAddress, { platform: 
 export async function runSender(job: Job, deps: SenderDeps): Promise<SendResult> {
   if (deps.now() >= job.expiresAt) return { status: "failed", code: "TTL_EXPIRED" };
   if (!job.device) return { status: "failed", code: "DEVICE_GONE" };
+  if (job.device.reassigned) return { status: "failed", code: "DEVICE_REASSIGNED" };
   if (job.device.status !== "active") {
     return { status: "failed", code: job.device.status === "disabled" ? "DEVICE_DISABLED" : "DEVICE_INVALID" };
   }

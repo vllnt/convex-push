@@ -1,7 +1,7 @@
 import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server.js";
-import { applyOutcome } from "./queue.js";
+import { applyOutcome, scrubIfDone } from "./queue.js";
 import type { DeliverOutcome } from "./validators.js";
 
 /**
@@ -20,6 +20,16 @@ export const onSendComplete = internalMutation({
           ? { status: "retry", code: "SENDER_ERROR" }
           : { status: "failed", code: "CANCELLED" };
     await applyOutcome(ctx, context.deliveryId, outcome);
+    return null;
+  },
+});
+
+/** Erase a message's content once none of its deliveries is queued. Idempotent. */
+export const scrub = internalMutation({
+  args: { messageId: v.id("messages") },
+  returns: v.null(),
+  handler: async (ctx, { messageId }) => {
+    await scrubIfDone(ctx, messageId);
     return null;
   },
 });

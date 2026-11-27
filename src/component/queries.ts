@@ -137,7 +137,7 @@ export const loadJob = internalQuery({
       data: data,
       options: messageOptions,
       overrides: v.optional(overrides),
-      device: v.union(v.null(), v.object({ status: deviceStatus, address: deviceAddress })),
+      device: v.union(v.null(), v.object({ status: deviceStatus, address: deviceAddress, reassigned: v.boolean() })),
     }),
   ),
   handler: async (ctx, args) => {
@@ -160,7 +160,7 @@ export const loadJob = internalQuery({
       data: message.data,
       options: message.options,
       overrides: message.overrides,
-      device: device ? { status: device.status, address: device.address } : null,
+      device: device ? { status: device.status, address: device.address, reassigned: device.subjectRef !== delivery.subjectRef } : null,
     };
   },
 });

@@ -27,7 +27,9 @@ export const deviceAddress = v.union(
 /** A device address. */
 export type DeviceAddress = Infer<typeof deviceAddress>;
 
+/** Device lifecycle status. */
 export const deviceStatus = v.union(v.literal("active"), v.literal("disabled"), v.literal("invalid"));
+/** Delivery status; `queued` is the only non-final one. */
 export const deliveryStatus = v.union(
   v.literal("queued"),
   v.literal("sent"),
@@ -37,6 +39,7 @@ export const deliveryStatus = v.union(
 /** Statuses a delivery ends in. */
 export const finalDeliveryStatus = v.union(v.literal("sent"), v.literal("failed"), v.literal("invalid"));
 
+/** Which Apple host: production or sandbox. */
 export const apnsEnvironment = v.union(v.literal("production"), v.literal("sandbox"));
 
 /**
@@ -59,6 +62,7 @@ export const data = v.record(v.string(), dataValue);
 /** Flat data. */
 export type PushData = Infer<typeof data>;
 
+/** Delivery priority, mapped to each provider's own field. */
 export const priority = v.union(v.literal("high"), v.literal("normal"));
 
 /** Neutral options every provider maps to its own fields. */
@@ -146,6 +150,7 @@ export const sendConfig = v.object({
 /** Send settings. */
 export type SendConfig = Infer<typeof sendConfig>;
 
+/** What `send` returns for one message. */
 export const sendResultView = v.object({
   messageId: v.string(),
   deliveries: v.number(),

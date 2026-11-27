@@ -202,6 +202,13 @@ describe("http helpers", () => {
     expect(await pending).toEqual({ ok: false, result: { status: "retry", code: "TIMEOUT" } });
     expect(await readJson(reply(200, "not json"))).toBeNull();
   });
+
+  test("redirects are not followed, so credentials only go to the given URL", async () => {
+    const fetchMock = stubFetch(reply(307, "", { location: "https://elsewhere.example/" }));
+    const outcome = await providerFetch("https://push.example/s", { headers: { authorization: "secret" } });
+    expect(outcome.ok && outcome.response.status).toBe(307);
+    expect(fetchCall(fetchMock, 0)[1].redirect).toBe("manual");
+  });
 });
 
 describe("keys from component env", () => {
@@ -222,6 +229,11 @@ describe("keys from component env", () => {
       ok: false,
       code: "CREDENTIALS_INVALID",
     });
+    const withUri = (tokenUri: string): PushEnv => ({ FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({ project_id: "p", client_email: "e", private_key: "k", token_uri: tokenUri }) });
+    for (const uri of ["https://attacker.example/token", "https://oauth2.googleapis.com.attacker.example/t", "https://oauth2.googleapis.com:8443/token", "not a url"]) {
+      expect(await readFcm(withUri(uri))).toEqual({ ok: false, code: "CREDENTIALS_INVALID" });
+    }
+    expect(await readFcm(withUri("https://oauth2.googleapis.com/token"))).toMatchObject({ ok: true });
     expect(await readFcm({ FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({ project_id: "p", client_email: "e", private_key: "k", private_key_id: "kid" }) })).toMatchObject({
       ok: true,
       value: { tokenUri: "https://oauth2.googleapis.com/token" },
@@ -272,6 +284,16 @@ describe("token cache", () => {
     const cache = createTokenCache(storage, now);
     const minted = async () => ({ ok: true as const, token: "A", refreshAfter: NOW + 1000, expiresAt: NOW + 2000 });
     expect(await cache.get({ credentialRef: "ref" }, "s", minted)).toEqual({ ok: true, token: "A" });
+  });
+
+  test("a fresh stored row that cannot be opened is dropped before minting, so the new token is stored", async () => {
+    const storage = memoryStorage();
+    storage.rows.set("ref|", { cipher: new ArrayBuffer(32), iv: new ArrayBuffer(12), refreshAfter: NOW + 1000, expiresAt: NOW + 2000, mintedAt: NOW });
+    const cache = createTokenCache(storage, now);
+    const minted = vi.fn(async () => ({ ok: true as const, token: "B", refreshAfter: NOW + 1000, expiresAt: NOW + 2000 }));
+    expect(await cache.get({ credentialRef: "ref" }, "s", minted)).toEqual({ ok: true, token: "B" });
+    expect(await cache.get({ credentialRef: "ref" }, "s", minted)).toEqual({ ok: true, token: "B" });
+    expect(minted).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -432,6 +454,21 @@ describe("Web Push sender", () => {
     expect(classifyWebPush(413, h(), NOW)).toEqual({ status: "failed", code: "PAYLOAD_TOO_LARGE", httpStatus: 413 });
     expect(classifyWebPush(429, h({ "retry-after": "5" }), NOW)).toEqual({ status: "retry", code: "HTTP_429", httpStatus: 429, delayMs: 5000 });
     expect(classifyWebPush(400, h(), NOW)).toEqual({ status: "failed", code: "HTTP_400", httpStatus: 400 });
+    expect(classifyWebPush(401, h(), NOW)).toEqual({ status: "retry", code: "HTTP_401", httpStatus: 401, delayMs: undefined });
+    expect(classifyWebPush(403, h(), NOW)).toEqual({ status: "retry", code: "HTTP_403", httpStatus: 403, delayMs: undefined });
+  });
+
+  test("a refused VAPID token (401 or 403) is dropped so the retry signs a new one", async () => {
+    const vapid = await generateVapid();
+    const sub = await generateSubscription();
+    const env = { VAPID_PUBLIC_KEY: vapid.publicKey, VAPID_PRIVATE_KEY: vapid.privateKey, VAPID_SUBJECT: "https://example.com" };
+    const job = { messageId: "m", endpoint: "https://push.example/s", p256dh: sub.p256dh, auth: sub.auth, content: content(), expiresAt: NOW + 60_000 };
+    stubFetch(reply(403), reply(201));
+    const cache = fakeCache();
+    expect(await sendWebPush(job, env, cache, now)).toMatchObject({ status: "retry", code: "HTTP_403" });
+    expect(cache.drop).toHaveBeenCalledWith({ credentialRef: expect.any(String), audience: "https://push.example" });
+    expect(await sendWebPush(job, env, cache, now)).toMatchObject({ status: "sent" });
+    expect(cache.drop).toHaveBeenCalledTimes(1);
   });
 
   test("encrypts for the browser and signs VAPID for the push service origin", async () => {
@@ -491,7 +528,7 @@ describe("sender dispatch and the custom-provider contract", () => {
     title: "t",
     data: {},
     options: { priority: "high" },
-    device: { status: "active", address: { platform: "custom", provider: "wns", address: "https://wns.example/c" } },
+    device: { status: "active", reassigned: false, address: { platform: "custom", provider: "wns", address: "https://wns.example/c" } },
     senderHandle: "function://handle",
     provider: "wns",
   };
@@ -501,6 +538,8 @@ describe("sender dispatch and the custom-provider contract", () => {
     expect(parseSendResult({ status: "sent", providerMessageId: "x", httpStatus: 200, extra: 1 })).toEqual({ status: "sent", providerMessageId: "x", httpStatus: 200 });
     expect(parseSendResult({ status: "retry", code: "503", delayMs: 5000 })).toEqual({ status: "retry", code: "503", delayMs: 5000, httpStatus: undefined });
     expect(parseSendResult({ status: "retry", delayMs: -5 })).toMatchObject({ delayMs: undefined });
+    expect(parseSendResult({ status: "retry", delayMs: 0 })).toMatchObject({ delayMs: 1000 });
+    expect(parseSendResult({ status: "retry", delayMs: 1e12 })).toMatchObject({ delayMs: 86_400_000 });
     expect(parseSendResult({ status: "invalid", code: "GONE", invalidSince: 5 })).toMatchObject({ status: "invalid", code: "GONE", invalidSince: 5 });
     expect(parseSendResult({ status: "failed", code: 7 })).toEqual({ status: "failed", code: undefined, httpStatus: undefined });
     expect(parseSendResult({ status: "maybe" })).toBeNull();
@@ -531,15 +570,16 @@ describe("sender dispatch and the custom-provider contract", () => {
     const run = vi.fn();
     expect(await runSender({ ...base, expiresAt: NOW }, deps(run))).toEqual({ status: "failed", code: "TTL_EXPIRED" });
     expect(await runSender({ ...base, device: null }, deps(run))).toEqual({ status: "failed", code: "DEVICE_GONE" });
-    expect(await runSender({ ...base, device: { status: "disabled", address: { platform: "fcm", token: "t" } } }, deps(run))).toEqual({ status: "failed", code: "DEVICE_DISABLED" });
-    expect(await runSender({ ...base, device: { status: "invalid", address: { platform: "fcm", token: "t" } } }, deps(run))).toEqual({ status: "failed", code: "DEVICE_INVALID" });
-    expect(await runSender({ ...base, device: { status: "active", address: { platform: "apns", token: "t" } } }, deps(run))).toEqual({ status: "failed", code: "APP_NOT_CONFIGURED" });
+    expect(await runSender({ ...base, device: { status: "disabled", reassigned: false, address: { platform: "fcm", token: "t" } } }, deps(run))).toEqual({ status: "failed", code: "DEVICE_DISABLED" });
+    expect(await runSender({ ...base, device: { status: "invalid", reassigned: false, address: { platform: "fcm", token: "t" } } }, deps(run))).toEqual({ status: "failed", code: "DEVICE_INVALID" });
+    expect(await runSender({ ...base, device: { status: "active", reassigned: false, address: { platform: "apns", token: "t" } } }, deps(run))).toEqual({ status: "failed", code: "APP_NOT_CONFIGURED" });
+    expect(await runSender({ ...base, device: { status: "active", reassigned: true, address: { platform: "fcm", token: "t" } } }, deps(run))).toEqual({ status: "failed", code: "DEVICE_REASSIGNED" });
     expect(run).not.toHaveBeenCalled();
   });
 
   test("built-in platforms dispatch to their senders", async () => {
     const run = vi.fn();
-    const active = (address: NonNullable<Job["device"]>["address"]): Job => ({ ...base, device: { status: "active", address } });
+    const active = (address: NonNullable<Job["device"]>["address"]): Job => ({ ...base, device: { status: "active", reassigned: false, address } });
     expect(await runSender({ ...active({ platform: "apns", token: "t" }), apns: { topic: "x", environment: "production" } }, deps(run))).toEqual({ status: "failed", code: "PROVIDER_NOT_CONFIGURED" });
     expect(await runSender(active({ platform: "fcm", token: "t" }), deps(run))).toEqual({ status: "failed", code: "PROVIDER_NOT_CONFIGURED" });
     expect(await runSender(active({ platform: "webpush", endpoint: "https://p.example/s", p256dh: "a", auth: "b" }), deps(run))).toEqual({ status: "failed", code: "PROVIDER_NOT_CONFIGURED" });

@@ -29,7 +29,7 @@ export interface SenderKeys {
  * @returns The private key and its raw public point.
  */
 export async function generateSenderKeys(): Promise<SenderKeys> {
-  const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
   return { privateKey: pair.privateKey, publicKey: toBytes(await crypto.subtle.exportKey("raw", pair.publicKey)) };
 }
 

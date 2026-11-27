@@ -7,6 +7,7 @@ function pem(der: ArrayBuffer): string {
   return `-----BEGIN PRIVATE KEY-----\n${b64.replaceAll(/(.{64})/g, "$1\n")}\n-----END PRIVATE KEY-----\n`;
 }
 
+/** A generated P-256 key pair: PKCS#8 PEM, plus the public key to verify with. */
 export interface EcKeys {
   pem: string;
   publicKey: CryptoKey;

@@ -61,6 +61,7 @@ const sendArgs = {
 };
 const sendReturns = v.object({ messageId: v.string(), deliveries: v.number(), deduplicated: v.boolean() });
 
+/** Register a device for a subject (on the main mount, or the partner mount). */
 export const registerDevice = mutation({
   args: {
     subjectRef: v.string(),
@@ -74,6 +75,7 @@ export const registerDevice = mutation({
   handler: async (ctx, { partner: usePartner, ...args }) => (usePartner ? partner : push).register(ctx, args),
 });
 
+/** Remove a device by id or address, optionally only if the subject owns it. */
 export const unregisterDevice = mutation({
   args: {
     target: v.union(v.object({ deviceId: v.string() }), v.object({ address: deviceAddress })),
@@ -83,14 +85,14 @@ export const unregisterDevice = mutation({
   handler: async (ctx, { target, subjectRef }) => push.unregister(ctx, { ...target, subjectRef }),
 });
 
-/** Calls the component directly, bypassing the client's app checks, to exercise the component's own guards. */
+/** Test-only: calls the component directly, bypassing the client's app checks, to exercise the component's own guards. Never deploy. */
 export const registerRaw = mutation({
   args: { subjectRef: v.string(), appRef: v.string(), address: deviceAddress, installRef: v.optional(v.string()), locale: v.optional(v.string()) },
   returns: v.object({ deviceId: v.string(), created: v.boolean() }),
   handler: async (ctx, args) => ctx.runMutation(components.push.mutations.register, args),
 });
 
-/** Calls the component's send directly with explicit settings, to exercise its config checks. */
+/** Test-only: calls the component's send directly with explicit settings, to exercise its config checks. Never deploy. */
 export const sendRaw = mutation({
   args: {
     subjectRef: v.string(),
@@ -117,18 +119,21 @@ export const sendRaw = mutation({
     }),
 });
 
+/** Test-only: calls the component directly to exercise its own argument checks. Never deploy. */
 export const unregisterRaw = mutation({
   args: { deviceId: v.optional(v.string()), address: v.optional(deviceAddress) },
   returns: v.object({ removed: v.boolean() }),
   handler: async (ctx, args) => ctx.runMutation(components.push.mutations.unregister, args),
 });
 
+/** Pause or resume one device. */
 export const setDeviceStatus = mutation({
   args: { deviceId: v.string(), status: v.union(v.literal("active"), v.literal("disabled")), subjectRef: v.optional(v.string()) },
   returns: v.object({ updated: v.boolean() }),
   handler: async (ctx, args) => push.setDeviceStatus(ctx, args),
 });
 
+/** A subject's devices, without addresses. */
 export const listDevices = query({
   args: {
     subjectRef: v.string(),
@@ -140,6 +145,7 @@ export const listDevices = query({
   handler: async (ctx, { partner: usePartner, ...args }) => (usePartner ? partner : push).listDevices(ctx, args),
 });
 
+/** Send one message to a subject or to named devices. */
 export const send = mutation({
   args: { ...sendArgs, partner: v.optional(v.boolean()) },
   returns: sendReturns,
@@ -150,40 +156,52 @@ export const send = mutation({
   },
 });
 
+/** Send the same message to several subjects in one transaction. */
 export const sendBatch = mutation({
-  args: { subjectRefs: v.array(v.string()), title: v.string(), body: v.optional(v.string()) },
+  args: {
+    subjectRefs: v.array(v.string()),
+    title: v.string(),
+    body: v.optional(v.string()),
+    ttlSeconds: v.optional(v.number()),
+    idempotencyKey: v.optional(v.string()),
+  },
   returns: v.array(sendReturns),
-  handler: async (ctx, args) =>
+  handler: async (ctx, { subjectRefs, ...message }) =>
     push.sendBatch(
       ctx,
-      args.subjectRefs.map((subjectRef) => ({ to: { subjectRef }, title: args.title, body: args.body })),
+      subjectRefs.map((subjectRef) => ({ to: { subjectRef }, ...message })),
     ),
 });
 
+/** One message's delivery status. */
 export const status = query({
   args: { messageId: v.string(), partner: v.optional(v.boolean()) },
   returns: v.union(messageStatus, v.null()),
   handler: async (ctx, args) => (args.partner ? partner : push).status(ctx, args.messageId),
 });
 
+/** A subject's recent messages, newest first. */
 export const listBySubject = query({
   args: { subjectRef: v.string(), limit: v.optional(v.number()) },
   returns: v.array(messageSummary),
   handler: async (ctx, args) => push.listBySubject(ctx, args),
 });
 
+/** Cancel a message's queued deliveries. */
 export const cancel = mutation({
   args: { messageId: v.string() },
   returns: v.object({ cancelled: v.number() }),
   handler: async (ctx, args) => push.cancel(ctx, args.messageId),
 });
 
+/** Run the retention sweep now. */
 export const prune = mutation({
   args: { partner: v.optional(v.boolean()), batch: v.optional(v.number()) },
   returns: v.object({ deleted: v.number(), more: v.boolean() }),
   handler: async (ctx, args) => (args.partner ? partner.prune(ctx, { batch: args.batch }) : push.prune(ctx)),
 });
 
+/** The delivery events the hook stored. */
 export const hookEvents = query({
   args: {},
   returns: v.array(deliveryEvent),
@@ -203,6 +221,7 @@ export const onDelivery = internalMutation({
   },
 });
 
+/** Test-only: a delivery hook that always throws. */
 export const failingHook = internalMutation({
   args: deliveryEvent,
   returns: v.null(),

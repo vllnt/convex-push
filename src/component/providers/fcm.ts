@@ -7,8 +7,12 @@ import { buildFcmMessage, isJsonObject, type JsonObject, type PushContent } from
 import type { Minted, TokenCache } from "./token_cache.js";
 
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
-/** Google access tokens live 3600 seconds. Reuse for 50 minutes. */
+/**
+ * Google access tokens live 3600 seconds. Reuse for 50 minutes, or for the
+ * lifetime less 10 minutes (at least half of it) when Google grants less.
+ */
 const FCM_TOKEN_REUSE_MS = 3_000_000;
+const FCM_TOKEN_MARGIN_MS = 600_000;
 
 /** One FCM delivery. */
 export interface FcmJob {
@@ -47,7 +51,7 @@ export async function mintGoogleToken(key: FcmKey, now: () => number): Promise<M
     return {
       ok: true,
       token: body.access_token,
-      refreshAfter: minted + Math.min(FCM_TOKEN_REUSE_MS, lifetimeMs / 2),
+      refreshAfter: minted + Math.min(FCM_TOKEN_REUSE_MS, Math.max(lifetimeMs - FCM_TOKEN_MARGIN_MS, lifetimeMs / 2)),
       expiresAt: minted + lifetimeMs,
     };
   }

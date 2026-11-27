@@ -42,7 +42,9 @@ function aadFor(slot: TokenSlot): string {
 /**
  * Build the cache. Tokens are stored encrypted under a key derived from the
  * long-lived private key; a stored token is reused until `refreshAfter`. When
- * a refresh fails, a stored token that has not expired is still used.
+ * a refresh fails, a stored token that has not expired is still used. A stored
+ * row that cannot be opened is dropped before minting, so it cannot win the
+ * store and force a new token on every send.
  * @param storage - Load, store and drop callbacks.
  * @param now - Clock.
  * @returns The cache.
@@ -53,8 +55,10 @@ export function createTokenCache(storage: TokenStorage, now: () => number): Toke
       const key = await deriveCacheKey(secret, slot.credentialRef);
       const aad = aadFor(slot);
       const row = await storage.load(slot);
-      const cached = row && now() < row.expiresAt ? await open(key, row, aad) : null;
+      const live = row !== null && now() < row.expiresAt;
+      const cached = live ? await open(key, row, aad) : null;
       if (cached && row && now() < row.refreshAfter) return { ok: true, token: cached };
+      if (live && !cached) await storage.drop(slot);
       const minted = await mint();
       if (!minted.ok) return cached ? { ok: true, token: cached } : minted;
       const sealed = await seal(key, minted.token, aad);

@@ -40,15 +40,28 @@ export const MAX_MAX_PARALLELISM = 100;
 
 /** Default retention of finished messages, their deliveries and long-invalid devices: 30 days. */
 export const DEFAULT_RETENTION_MS = 2_592_000_000;
-/** Default rows deleted per prune pass before the sweep reschedules itself. */
-export const DEFAULT_PRUNE_BATCH = 200;
-/** Upper bound accepted for a prune batch. */
-export const MAX_PRUNE_BATCH = 500;
+/**
+ * Default rows one prune pass deletes before the sweep reschedules itself. A
+ * pass always finishes the message it started, so it may go over by up to 100.
+ */
+export const DEFAULT_PRUNE_BATCH = 4000;
+/** Upper bound accepted for a prune batch, inside Convex's per-transaction write limit. */
+export const MAX_PRUNE_BATCH = 4000;
+/** Most messages one prune pass looks at (each reads up to 100 deliveries). */
+export const PRUNE_MESSAGES_PER_PASS = 100;
+/** A message is pruned only once it expired this long ago, so no send job can still be on its way. */
+export const PRUNE_GRACE_MS = 86_400_000;
 
 /** Most active devices one message fans out to. */
 export const MAX_DEVICES_PER_MESSAGE = 100;
 /** Most messages accepted by one `sendBatch` call. */
 export const MAX_BATCH_MESSAGES = 100;
+/**
+ * Most deliveries one `sendBatch` call may create across its messages. Each
+ * delivery writes about four documents (delivery, queue entries, rate-limit
+ * row), so this keeps one call inside Convex's per-transaction write limit.
+ */
+export const MAX_BATCH_DELIVERIES = 1000;
 /** Most rows returned by one list query. */
 export const MAX_LIST_LIMIT = 100;
 
@@ -113,6 +126,7 @@ export const DELIVERY_ERROR_CODES = [
   "DEVICE_DISABLED",
   "DEVICE_GONE",
   "DEVICE_INVALID",
+  "DEVICE_REASSIGNED",
   "FAILED",
   "GONE",
   "INVALID",

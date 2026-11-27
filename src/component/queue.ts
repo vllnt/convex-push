@@ -7,6 +7,7 @@ import {
   DEFAULT_TTL_SECONDS,
   DEVICE_SENDS_PER_MINUTE,
   MAX_DEVICES_PER_MESSAGE,
+  MAX_REF_LENGTH,
   type Platform,
   ZERO_TTL_WINDOW_MS,
 } from "../shared.js";
@@ -45,10 +46,20 @@ export function isMutationHandle(handle: string): handle is FunctionHandle<"muta
   return isHandleString(handle);
 }
 
+/**
+ * APNs answers that mean the app's tokens are going to the wrong environment or
+ * topic. A burst of them pauses the app.
+ */
+const BREAKER_CODES = new Set(["BadDeviceToken", "DeviceTokenNotForTopic"]);
+
+/**
+ * Queue one send job. `maxParallelism` is the pool-wide setting, so only a live
+ * send passes it; a retry passes `undefined` and leaves the pool's setting as is.
+ */
 async function enqueueJob(
   ctx: MutationCtx,
   delivery: Pick<Doc<"deliveries">, "_id" | "platform">,
-  maxParallelism: number,
+  maxParallelism: number | undefined,
   runAt: number,
 ): Promise<void> {
   const pool = new Workpool(POOLS[delivery.platform], { maxParallelism, retryActionsByDefault: false });
@@ -89,8 +100,19 @@ export type FinishedDelivery = Pick<Doc<"deliveries">, "_id" | "deviceId" | "pla
 export type MessageRef = Pick<Doc<"messages">, "_id" | "onDeliveryHandle">;
 
 /**
- * A delivery reached sent, failed or invalid: schedule the host hook (never
- * inline, so a hook that throws cannot undo the record) and scrub when done.
+ * Forget a deleted device's per-device rate-limit state, so the limiter does
+ * not keep a row for every device ever sent to.
+ * @param ctx - Mutation context.
+ * @param deviceId - The deleted device.
+ */
+export async function forgetDevice(ctx: MutationCtx, deviceId: Id<"devices">): Promise<void> {
+  await limiter.reset(ctx, "device", { key: deviceId });
+}
+
+/**
+ * A delivery reached sent, failed or invalid: log it and schedule the host hook
+ * (never inline, so a hook that throws cannot undo the record). The caller
+ * scrubs the message (see `scrubIfDone`).
  * @param ctx - Mutation context.
  * @param delivery - The delivery after its final patch.
  * @param message - Its message.
@@ -120,7 +142,16 @@ export async function finishDelivery(ctx: MutationCtx, delivery: FinishedDeliver
       logger.warn("hook.schedule_failed", { deliveryId: delivery._id });
     }
   }
-  await scrubIfDone(ctx, message._id);
+}
+
+/**
+ * Scrub in a separate transaction, so recording one delivery does not read its
+ * siblings and conflict with their completions.
+ */
+async function scheduleScrub(ctx: MutationCtx, message: Doc<"messages">): Promise<void> {
+  if (message.scrub && message.scrubbedAt === undefined) {
+    await ctx.scheduler.runAfter(0, internal.internal_mutations.scrub, { messageId: message._id });
+  }
 }
 
 async function setDelivery(
@@ -141,6 +172,7 @@ async function resolveDevices(ctx: MutationCtx, to: SendInput["to"]): Promise<{
       .query("devices")
       .withIndex("by_subject_status", (q) => q.eq("subjectRef", to.subjectRef).eq("status", "active"))
       .take(MAX_DEVICES_PER_MESSAGE);
+    if (devices.length === MAX_DEVICES_PER_MESSAGE) logger.warn("message.device_cap", { devices: devices.length });
     return { devices, to: { subjectRef: to.subjectRef } };
   }
   const ids = [...new Set(to.deviceIds)]
@@ -234,14 +266,14 @@ export async function enqueueMessage(
     fail("PAYLOAD_TOO_LARGE", `${oversize.platform} payload is ${String(oversize.bytes)} bytes, over its ${String(oversize.limit)}-byte limit`);
   }
   const now = Date.now();
+  const expiresAt = now + (ttlSeconds === 0 ? ZERO_TTL_WINDOW_MS : ttlSeconds * 1000);
   const messageId = await ctx.db.insert("messages", {
     to,
     ...content,
     onDeliveryHandle: config.onDeliveryHandle,
     idempotencyKey: input.idempotencyKey,
-    expiresAt: now + (ttlSeconds === 0 ? ZERO_TTL_WINDOW_MS : ttlSeconds * 1000),
+    expiresAt,
     maxAttempts: config.maxAttempts,
-    maxParallelism: config.maxParallelism,
     scrub: config.scrub,
   });
   const apps = new Map(config.apps.map((a) => [a.appRef, a.app]));
@@ -250,13 +282,15 @@ export async function enqueueMessage(
   const finished: FinishedDelivery[] = [];
   await Promise.all(
     devices.map(async (device) => {
-      const plan = await planDelivery(ctx, device, silent, apps, providers);
-      const fuse = plan.status === "queued" ? await limiter.limit(ctx, "device", { key: device._id, reserve: true }) : null;
+      const planned = await planDelivery(ctx, device, silent, apps, providers);
+      const fuse = planned.status === "queued" ? await limiter.limit(ctx, "device", { key: device._id, reserve: true }) : null;
       const retryAfter = fuse?.retryAfter ?? 0;
+      const plan: Plan = now + retryAfter >= expiresAt ? { ...planned, status: "failed", errorCode: "TTL_EXPIRED" } : planned;
       const platform = device.address.platform;
       const deliveryId = await ctx.db.insert("deliveries", {
         messageId,
         deviceId: device._id,
+        subjectRef: device.subjectRef,
         platform,
         ...plan,
         attempts: 0,
@@ -276,17 +310,28 @@ export async function enqueueMessage(
   return { messageId, deliveries: devices.length, deduplicated: false };
 }
 
+/** Cut a provider-supplied string to the stored length cap. */
+function clip(value: string | undefined): string | undefined {
+  return value?.slice(0, MAX_REF_LENGTH);
+}
+
 /**
  * Apply one send outcome to a queued delivery: record it, invalidate a dead
  * device, or queue a retry until the attempt limit or the message's expiry.
- * A delivery that is no longer queued (cancelled, pruned) is left alone.
+ * A delivery that is no longer queued (cancelled) is left as it is, but a dead
+ * device it reports is still invalidated. A pruned delivery is ignored.
  * @param ctx - Mutation context.
  * @param deliveryId - The delivery.
  * @param outcome - What the send action returned.
  */
 export async function applyOutcome(ctx: MutationCtx, deliveryId: Id<"deliveries">, outcome: DeliverOutcome): Promise<void> {
   const delivery = await ctx.db.get("deliveries", deliveryId);
-  if (delivery?.status !== "queued" || outcome.status === "skip") return;
+  if (!delivery || outcome.status === "skip") return;
+  const code = outcome.status === "sent" ? undefined : clip(outcome.code);
+  if (delivery.status !== "queued") {
+    if (outcome.status === "invalid") await invalidateDevice(ctx, delivery, code ?? "INVALID", outcome.invalidSince);
+    return;
+  }
   const message = await ctx.db.get("messages", delivery.messageId);
   if (!message) return;
   const now = Date.now();
@@ -297,34 +342,53 @@ export async function applyOutcome(ctx: MutationCtx, deliveryId: Id<"deliveries"
       const done = await setDelivery(ctx, delivery, {
         ...base,
         status: "sent",
-        providerMessageId: outcome.providerMessageId,
+        providerMessageId: clip(outcome.providerMessageId),
         errorCode: undefined,
         sentAt: now,
       });
       await finishDelivery(ctx, done, message);
-      return;
+      break;
     }
     case "invalid": {
-      await recordInvalid(ctx, delivery, message, { ...base, code: outcome.code ?? "INVALID", invalidSince: outcome.invalidSince });
-      return;
+      await recordInvalid(ctx, delivery, message, { ...base, code: code ?? "INVALID", invalidSince: outcome.invalidSince });
+      break;
     }
     case "failed": {
-      const done = await setDelivery(ctx, delivery, { ...base, status: "failed", errorCode: outcome.code ?? "FAILED" });
+      const done = await setDelivery(ctx, delivery, { ...base, status: "failed", errorCode: code ?? "FAILED" });
       await finishDelivery(ctx, done, message);
-      return;
+      break;
     }
     case "retry": {
       const nextAttemptAt = now + (outcome.delayMs ?? backoffDelay(attempts));
-      const stop = attempts >= message.maxAttempts ? (outcome.code ?? "RETRY_LIMIT") : nextAttemptAt >= message.expiresAt ? "TTL_EXPIRED" : null;
+      const stop = attempts >= message.maxAttempts ? (code ?? "RETRY_LIMIT") : nextAttemptAt >= message.expiresAt ? "TTL_EXPIRED" : null;
       if (stop) {
         const done = await setDelivery(ctx, delivery, { ...base, status: "failed", errorCode: stop });
         await finishDelivery(ctx, done, message);
-        return;
+        break;
       }
-      await ctx.db.patch("deliveries", deliveryId, { ...base, errorCode: outcome.code, nextAttemptAt });
-      await enqueueJob(ctx, delivery, message.maxParallelism, nextAttemptAt);
-      logger.info("delivery.retry", { deliveryId, platform: delivery.platform, attempts, errorCode: outcome.code });
+      await ctx.db.patch("deliveries", deliveryId, { ...base, errorCode: code, nextAttemptAt });
+      await enqueueJob(ctx, delivery, undefined, nextAttemptAt);
+      logger.info("delivery.retry", { deliveryId, platform: delivery.platform, attempts, errorCode: code });
+      return;
     }
+  }
+  await scheduleScrub(ctx, message);
+}
+
+/**
+ * Mark the delivery's device invalid, unless it registered again after the
+ * provider says the address stopped working (Apple's 410 timestamp).
+ */
+async function invalidateDevice(
+  ctx: MutationCtx,
+  delivery: Doc<"deliveries">,
+  code: string,
+  invalidSince: number | undefined,
+): Promise<void> {
+  const device = await ctx.db.get("devices", delivery.deviceId);
+  const registeredSince = invalidSince !== undefined && device !== null && device.lastSeenAt > invalidSince;
+  if (device?.status === "active" && !registeredSince) {
+    await ctx.db.patch("devices", device._id, { status: "invalid", invalidCode: code });
   }
 }
 
@@ -336,7 +400,7 @@ async function recordInvalid(
 ): Promise<void> {
   const { code, invalidSince, ...base } = info;
   const device = await ctx.db.get("devices", delivery.deviceId);
-  if (device && delivery.platform === "apns" && code === "BadDeviceToken") {
+  if (device && delivery.platform === "apns" && BREAKER_CODES.has(code)) {
     const breaker = await limiter.limit(ctx, "badDeviceToken", { key: device.appRef });
     if (!breaker.ok) {
       logger.warn("app.paused", { appRef: device.appRef });
@@ -346,9 +410,6 @@ async function recordInvalid(
     }
   }
   const done = await setDelivery(ctx, delivery, { ...base, status: "invalid", errorCode: code });
-  const registeredSince = invalidSince !== undefined && device !== null && device.lastSeenAt > invalidSince;
-  if (device?.status === "active" && !registeredSince) {
-    await ctx.db.patch("devices", device._id, { status: "invalid", invalidCode: code });
-  }
+  await invalidateDevice(ctx, delivery, code, invalidSince);
   await finishDelivery(ctx, done, message);
 }

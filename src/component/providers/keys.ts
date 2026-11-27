@@ -98,6 +98,21 @@ function parseJson(text: string): unknown {
 }
 
 /**
+ * Whether a token URI is https to a Google API host, so the signed assertion
+ * only ever goes to Google.
+ * @param value - The `token_uri` from the key file.
+ * @returns Whether it may be used.
+ */
+function isGoogleTokenUri(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.port === "" && url.hostname.endsWith(".googleapis.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Read the Google service-account key.
  * @param env - Component env.
  * @returns The key, or why it is unusable.
@@ -110,7 +125,7 @@ export async function readFcm(env: PushEnv): Promise<KeyRead<FcmKey>> {
   const clientEmail = stringField(parsed, "client_email");
   const privateKey = stringField(parsed, "private_key");
   const tokenUri = stringField(parsed, "token_uri") ?? GOOGLE_TOKEN_URI;
-  if (!projectId || !clientEmail || !privateKey || !tokenUri.startsWith("https://")) {
+  if (!projectId || !clientEmail || !privateKey || !isGoogleTokenUri(tokenUri)) {
     return { ok: false, code: "CREDENTIALS_INVALID" };
   }
   const keyId = stringField(parsed, "private_key_id") ?? "";

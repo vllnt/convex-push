@@ -87,7 +87,7 @@ export async function importRawP256PrivateKey(
 /**
  * Make a compact JWS. ES256 signatures come out of Web Crypto as raw r||s,
  * which is the JWS encoding (RFC 7518 section 3.4).
- * @param header - JOSE header; `alg` is set from `algorithm`.
+ * @param header - JOSE header; `alg` always comes from `algorithm`, never from it.
  * @param claims - JWT claims.
  * @param key - A signing key from {@link importSigningKey} or {@link importRawP256PrivateKey}.
  * @param algorithm - ES256 or RS256.
@@ -99,7 +99,7 @@ export async function signJwt(
   key: CryptoKey,
   algorithm: JwtAlgorithm,
 ): Promise<string> {
-  const input = `${base64UrlEncode(utf8(JSON.stringify({ alg: algorithm, typ: "JWT", ...header })))}.${base64UrlEncode(utf8(JSON.stringify(claims)))}`;
+  const input = `${base64UrlEncode(utf8(JSON.stringify({ typ: "JWT", ...header, alg: algorithm })))}.${base64UrlEncode(utf8(JSON.stringify(claims)))}`;
   const signature = await crypto.subtle.sign(
     algorithm === "ES256" ? { name: "ECDSA", hash: "SHA-256" } : RSA_SHA256,
     key,

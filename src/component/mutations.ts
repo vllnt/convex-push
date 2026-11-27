@@ -2,24 +2,26 @@ import { v } from "convex/values";
 import {
   DEFAULT_PRUNE_BATCH,
   DEFAULT_RETENTION_MS,
+  MAX_BATCH_DELIVERIES,
   MAX_BATCH_MESSAGES,
   MAX_DEVICES_PER_MESSAGE,
   MAX_PRUNE_BATCH,
+  PRUNE_GRACE_MS,
+  PRUNE_MESSAGES_PER_PASS,
 } from "../shared.js";
 import { api } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { mutation } from "./_generated/server.js";
-import { enqueueMessage, finishDelivery, logger } from "./queue.js";
+import { enqueueMessage, finishDelivery, forgetDevice, logger, scrubIfDone } from "./queue.js";
 import { addressHash, checkAddress, checkRef, fail } from "./registry.js";
 import { deviceAddress, sendConfig, sendInput, sendResultView } from "./validators.js";
-
-/** `lastSeenAt` is rewritten at most once a day when nothing else changed. */
-const SEEN_REFRESH_MS = 86_400_000;
 
 /**
  * Register or refresh a device. A known address is updated in place; an address
  * that moves to another subject is reassigned to it; a rotated token with a
- * known `installRef` replaces its row. An invalid device becomes active again.
+ * known `installRef` (same app) replaces its row. An invalid device
+ * becomes active again. `lastSeenAt` is refreshed on every call, so Apple's 410
+ * timestamp can tell a later registration apart.
  * A disabled device stays disabled unless it moves to another subject.
  */
 export const register = mutation({
@@ -43,14 +45,14 @@ export const register = mutation({
       .query("devices")
       .withIndex("by_address_hash", (q) => q.eq("addressHash", hash))
       .first();
-    const existing =
-      byAddress ??
-      (args.installRef === undefined
+    const byInstall =
+      byAddress || args.installRef === undefined
         ? null
         : await ctx.db
             .query("devices")
             .withIndex("by_install", (q) => q.eq("installRef", args.installRef))
-            .first());
+            .first();
+    const existing = byAddress ?? (byInstall?.appRef === args.appRef ? byInstall : null);
     if (!existing) {
       const deviceId = await ctx.db.insert("devices", {
         subjectRef: args.subjectRef,
@@ -67,28 +69,17 @@ export const register = mutation({
     }
     const reassigned = existing.subjectRef !== args.subjectRef;
     const status: Doc<"devices">["status"] = existing.status === "disabled" && !reassigned ? "disabled" : "active";
-    const changed =
-      reassigned ||
-      status !== existing.status ||
-      existing.appRef !== args.appRef ||
-      existing.addressHash !== hash ||
-      JSON.stringify(existing.address) !== JSON.stringify(args.address) ||
-      (args.installRef !== undefined && existing.installRef !== args.installRef) ||
-      (args.locale !== undefined && existing.locale !== args.locale) ||
-      now - existing.lastSeenAt >= SEEN_REFRESH_MS;
-    if (changed) {
-      await ctx.db.patch("devices", existing._id, {
-        subjectRef: args.subjectRef,
-        appRef: args.appRef,
-        address: args.address,
-        addressHash: hash,
-        installRef: args.installRef ?? existing.installRef,
-        locale: args.locale ?? existing.locale,
-        status,
-        invalidCode: undefined,
-        lastSeenAt: now,
-      });
-    }
+    await ctx.db.patch("devices", existing._id, {
+      subjectRef: args.subjectRef,
+      appRef: args.appRef,
+      address: args.address,
+      addressHash: hash,
+      installRef: args.installRef ?? existing.installRef,
+      locale: args.locale ?? existing.locale,
+      status,
+      invalidCode: undefined,
+      lastSeenAt: now,
+    });
     return { deviceId: existing._id, created: false };
   },
 });
@@ -119,7 +110,10 @@ export const unregister = mutation({
             .withIndex("by_address_hash", (q) => q.eq("addressHash", hash))
             .first();
     const owned = device !== null && (args.subjectRef === undefined || device.subjectRef === args.subjectRef);
-    if (owned) await ctx.db.delete("devices", device._id);
+    if (owned) {
+      await ctx.db.delete("devices", device._id);
+      await forgetDevice(ctx, device._id);
+    }
     return { removed: owned };
   },
 });
@@ -148,14 +142,25 @@ export const send = mutation({
   handler: async (ctx, { message, config }) => enqueueMessage(ctx, message, config),
 });
 
-/** Enqueue up to 100 messages in one transaction. If one is refused, none is queued. */
+/**
+ * Enqueue up to 100 messages and 1,000 deliveries in one transaction. If one
+ * is refused, or the batch fans out to more deliveries, none is queued.
+ */
 export const sendBatch = mutation({
   args: { messages: v.array(sendInput), config: sendConfig },
   returns: v.array(sendResultView),
   handler: async (ctx, { messages, config }) => {
     if (messages.length > MAX_BATCH_MESSAGES) fail("INVALID_ARGUMENT", `sendBatch accepts at most ${String(MAX_BATCH_MESSAGES)} messages`);
     const results = [];
-    for (const message of messages) results.push(await enqueueMessage(ctx, message, config));
+    let deliveries = 0;
+    for (const message of messages) {
+      const result = await enqueueMessage(ctx, message, config);
+      deliveries += result.deduplicated ? 0 : result.deliveries;
+      if (deliveries > MAX_BATCH_DELIVERIES) {
+        fail("INVALID_ARGUMENT", `sendBatch fans out to more than ${String(MAX_BATCH_DELIVERIES)} deliveries; split it`);
+      }
+      results.push(result);
+    }
     return results;
   },
 });
@@ -180,14 +185,17 @@ export const cancel = mutation({
       await finishDelivery(ctx, { ...delivery, ...patch }, message);
       cancelled += 1;
     }
+    await scrubIfDone(ctx, message._id);
     return { cancelled };
   },
 });
 
 /**
- * Delete messages older than the retention window with their deliveries,
- * devices invalid and unseen for that long, and expired cached tokens.
- * Reschedules itself while a batch comes back full. Idempotent.
+ * Delete messages older than the retention window (and expired more than a day
+ * ago, so no send job is still on its way) with their deliveries, devices
+ * invalid and unseen for that long, and expired cached tokens. One pass deletes
+ * about `batch` rows (default and maximum 4,000) and reschedules itself while
+ * there is more. Idempotent.
  */
 export const prune = mutation({
   args: { retentionMs: v.optional(v.number()), batch: v.optional(v.number()) },
@@ -201,33 +209,48 @@ export const prune = mutation({
     if (!Number.isFinite(retentionMs) || retentionMs < 0) fail("INVALID_ARGUMENT", "retentionMs must be a non-negative number");
     const now = Date.now();
     const cutoff = now - retentionMs;
-    const messages = await ctx.db
+    const pageSize = Math.min(batch, PRUNE_MESSAGES_PER_PASS);
+    const old = await ctx.db
       .query("messages")
       .withIndex("by_creation_time", (q) => q.lt("_creationTime", cutoff))
-      .take(batch);
-    const deliveryLists = await Promise.all(
-      messages.map((m) =>
-        ctx.db
+      .take(pageSize);
+    const doomed = old.filter((m) => m.expiresAt + PRUNE_GRACE_MS < now);
+    const pages = await Promise.all(
+      doomed.map(async (message) => ({
+        message,
+        deliveries: await ctx.db
           .query("deliveries")
-          .withIndex("by_message", (q) => q.eq("messageId", m._id))
+          .withIndex("by_message", (q) => q.eq("messageId", message._id))
           .take(MAX_DEVICES_PER_MESSAGE + 1),
-      ),
+      })),
     );
+    let deleted = 0;
+    let stopped = false;
+    const deletions: Promise<void>[] = [];
+    for (const { message, deliveries } of pages) {
+      if (deleted > 0 && deleted + deliveries.length + 1 > batch) {
+        stopped = true;
+        break;
+      }
+      deletions.push(...deliveries.map((d) => ctx.db.delete("deliveries", d._id)), ctx.db.delete("messages", message._id));
+      deleted += deliveries.length + 1;
+    }
+    await Promise.all(deletions);
+    const room = Math.max(batch - deleted, 0);
     const devices = await ctx.db
       .query("devices")
       .withIndex("by_status_seen", (q) => q.eq("status", "invalid").lt("lastSeenAt", cutoff))
-      .take(batch);
+      .take(room);
+    for (const device of devices) {
+      await ctx.db.delete("devices", device._id);
+      await forgetDevice(ctx, device._id);
+    }
     const tokens = await ctx.db.query("providerTokens").take(MAX_PRUNE_BATCH);
     const expiredTokens = tokens.filter((t) => t.expiresAt < now);
-    const deletions = [
-      ...deliveryLists.flat().map((d) => ctx.db.delete("deliveries", d._id)),
-      ...messages.map((m) => ctx.db.delete("messages", m._id)),
-      ...devices.map((d) => ctx.db.delete("devices", d._id)),
-      ...expiredTokens.map((t) => ctx.db.delete("providerTokens", t._id)),
-    ];
-    await Promise.all(deletions);
-    const more = messages.length === batch || devices.length === batch;
+    await Promise.all(expiredTokens.map((t) => ctx.db.delete("providerTokens", t._id)));
+    deleted += devices.length + expiredTokens.length;
+    const more = stopped || devices.length === room || (old.length === pageSize && doomed.length > 0);
     if (more) await ctx.scheduler.runAfter(0, api.mutations.prune, { retentionMs, batch });
-    return { deleted: deletions.length, more };
+    return { deleted, more };
   },
 });

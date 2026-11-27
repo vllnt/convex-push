@@ -32,7 +32,9 @@ export async function webPushTopic(job: Pick<WebPushJob, "content" | "messageId"
 }
 
 /**
- * Map a push service response to a sender result.
+ * Map a push service response to a sender result. 401 and 403 mean the push
+ * service refused the VAPID token: the sender drops it and the retry signs a
+ * new one.
  * @param status - HTTP status.
  * @param headers - Response headers.
  * @param now - Clock.
@@ -43,7 +45,7 @@ export function classifyWebPush(status: number, headers: Headers, now: number): 
     return { status: "sent", providerMessageId: headers.get("location") ?? undefined, httpStatus: status };
   }
   if (status === 404 || status === 410) return { status: "invalid", code: status === 404 ? "NOT_FOUND" : "GONE", httpStatus: status };
-  if (status === 429 || status >= 500) {
+  if (status === 401 || status === 403 || status === 429 || status >= 500) {
     return { status: "retry", code: `HTTP_${String(status)}`, httpStatus: status, delayMs: parseRetryAfter(headers.get("retry-after"), now) };
   }
   return { status: "failed", code: status === 413 ? "PAYLOAD_TOO_LARGE" : `HTTP_${String(status)}`, httpStatus: status };
@@ -93,5 +95,7 @@ export async function sendWebPush(job: WebPushJob, env: PushEnv, cache: TokenCac
     body,
   });
   if (!http.ok) return http.result;
-  return classifyWebPush(http.response.status, http.response.headers, now());
+  const { status } = http.response;
+  if (status === 401 || status === 403) await cache.drop({ credentialRef: key.value.credentialRef, audience });
+  return classifyWebPush(status, http.response.headers, now());
 }

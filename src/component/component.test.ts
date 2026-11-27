@@ -6,7 +6,9 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import { checkSendConfig, checkSendInput } from "./checks.js";
 import crons from "./crons.js";
+import { isPublicHttpsUrl } from "./registry.js";
 import schema from "./schema.js";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -45,13 +47,13 @@ async function seed(t: T, maxAttempts = 5, onDeliveryHandle?: string): Promise<{
       options: { ttlSeconds: 3600, priority: "high" },
       expiresAt: now + 3_600_000,
       maxAttempts,
-      maxParallelism: 10,
       scrub: true,
       onDeliveryHandle,
     });
     const deliveryId = await ctx.db.insert("deliveries", {
       messageId,
       deviceId,
+      subjectRef: "u1",
       platform: "custom",
       provider: "webhook",
       status: "queued",
@@ -128,6 +130,45 @@ describe("workpool completion", () => {
     expect(await t.query(internal.queries.loadJob, { deliveryId })).toBeNull();
   });
 
+  test("a cancelled delivery stays cancelled, but a dead device it reports is still invalidated", async () => {
+    const t = setup();
+    const { deliveryId } = await seed(t);
+    const cancelled = { status: "failed", errorCode: "CANCELLED" } as const;
+    await t.run((ctx) => ctx.db.patch("deliveries", deliveryId, cancelled));
+    const complete = (returnValue: unknown) =>
+      t.mutation(internal.internal_mutations.onSendComplete, { workId: workId("w"), context: { deliveryId }, result: { kind: "success", returnValue } });
+    const device = async () => t.run(async (ctx) => (await ctx.db.query("devices").take(1))[0]);
+    await complete({ status: "sent" });
+    expect(await device()).toMatchObject({ status: "active" });
+    await complete({ status: "invalid" });
+    expect(await device()).toMatchObject({ status: "invalid", invalidCode: "INVALID" });
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.query("devices").take(1))[0];
+      if (row) await ctx.db.patch("devices", row._id, { status: "active", invalidCode: undefined });
+    });
+    await complete({ status: "invalid", code: "Unregistered" });
+    expect(await delivery(t, deliveryId)).toMatchObject({ ...cancelled, attempts: 0 });
+    expect(await device()).toMatchObject({ status: "invalid", invalidCode: "Unregistered" });
+  });
+
+  test("provider-supplied ids and codes are stored at most 256 characters long", async () => {
+    const t = setup();
+    const long = "x".repeat(300);
+    const a = await seed(t);
+    await t.mutation(internal.internal_mutations.onSendComplete, {
+      workId: workId("w"),
+      context: { deliveryId: a.deliveryId },
+      result: { kind: "success", returnValue: { status: "sent", providerMessageId: long } },
+    });
+    expect((await delivery(t, a.deliveryId))?.providerMessageId).toHaveLength(256);
+    const b = await seed(t);
+    await t.mutation(internal.internal_mutations.onSendComplete, {
+      workId: workId("w"),
+      context: { deliveryId: b.deliveryId },
+      result: { kind: "success", returnValue: { status: "failed", code: long } },
+    });
+    expect((await delivery(t, b.deliveryId))?.errorCode).toHaveLength(256);
+  });
 
   test("a hook that cannot be scheduled is logged and the delivery is still recorded", async () => {
     const t = setup();
@@ -144,6 +185,42 @@ describe("workpool completion", () => {
     expect(await delivery(t, deliveryId)).toMatchObject({ status: "sent", attempts: 1 });
     expect(JSON.stringify(lines)).toContain("hook.schedule_failed");
     vi.restoreAllMocks();
+  });
+});
+
+describe("input checks", () => {
+  const config = { apps: [], providers: [], maxAttempts: 5, maxParallelism: 10, scrub: true };
+
+  test("values sent as HTTP headers must be printable ASCII", () => {
+    const apns = (topic: string) => ({ appRef: "ios", app: { platform: "apns" as const, topic, environment: "production" as const } });
+    expect(() => checkSendConfig({ ...config, apps: [apns("com.example.app")] })).not.toThrow();
+    expect(() => checkSendConfig({ ...config, apps: [apns("com.example app")] })).toThrow(/topic/);
+    expect(() => checkSendConfig({ ...config, apps: [apns("com.example\r\nx: y")] })).toThrow(/topic/);
+    expect(() => checkSendInput({ to: { subjectRef: "u1" }, collapseKey: "ticket 42" })).not.toThrow();
+    expect(() => checkSendInput({ to: { subjectRef: "u1" }, collapseKey: "a\nb" })).toThrow(/collapseKey/);
+    expect(() => checkSendInput({ to: { subjectRef: "u1" }, collapseKey: "" })).toThrow(/collapseKey/);
+  });
+
+  test("Web Push endpoints must be https to a public host name", () => {
+    expect(isPublicHttpsUrl("https://fcm.googleapis.com/fcm/send/abc")).toBe(true);
+    for (const url of [
+      "http://push.example/s",
+      "https://push.example:8443/s",
+      "https://someone@push.example/s",
+      "https://:x@push.example/s",
+      "https://127.0.0.1/s",
+      "https://[::1]/s",
+      "https://intranet/s",
+      "https://localhost/s",
+      "https://api.localhost/s",
+      "https://printer.local/s",
+      "https://metadata.google.internal/s",
+      "https://router.lan/s",
+      "https://nas.home.arpa/s",
+      "not a url",
+    ]) {
+      expect(isPublicHttpsUrl(url)).toBe(false);
+    }
   });
 });
 

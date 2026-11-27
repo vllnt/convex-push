@@ -105,6 +105,14 @@ describe("JWS signatures", () => {
     const jwt = await signJwt({}, { aud: "https://push.example" }, key ?? vapid.verifyKey, "ES256");
     expect((await verifyJwt(jwt, vapid.verifyKey)).valid).toBe(true);
   });
+
+  test("the header cannot override alg", async () => {
+    const vapid = await generateVapid();
+    const key = await importRawP256PrivateKey(vapid.privateKey, vapid.publicKey, "sign");
+    const jwt = await signJwt({ alg: "none", kid: "k1" }, { aud: "a" }, key ?? vapid.verifyKey, "ES256");
+    const header: unknown = JSON.parse(new TextDecoder().decode(base64Decode(jwt.split(".")[0] ?? "") ?? new Uint8Array()));
+    expect(header).toEqual({ typ: "JWT", kid: "k1", alg: "ES256" });
+  });
 });
 
 describe("Web Push encryption (RFC 8291)", () => {

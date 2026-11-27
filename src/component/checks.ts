@@ -16,6 +16,10 @@ import type { PushData, SendConfig, SendInput } from "./validators.js";
 /** Data keys APNs or FCM reserve for themselves. */
 const RESERVED_DATA_KEYS = new Set(["aps", "from", "notification", "message_type", "collapse_key"]);
 
+/** Values sent as HTTP header values: printable ASCII (the APNs topic also without spaces). */
+const HEADER_TEXT = /^[\x20-\x7e]+$/;
+const HEADER_TOKEN = /^[\x21-\x7e]+$/;
+
 function checkText(field: string, value: string | undefined, max = MAX_TEXT_LENGTH): void {
   if (value !== undefined && value.length > max) {
     fail("INVALID_ARGUMENT", `${field} must be at most ${String(max)} characters`);
@@ -59,8 +63,8 @@ export function checkSendInput(input: SendInput): void {
   checkText("title", input.title);
   checkText("body", input.body);
   checkData(input.data ?? {});
-  if (input.collapseKey !== undefined && (input.collapseKey.length === 0 || byteLength(input.collapseKey) > MAX_COLLAPSE_KEY_BYTES)) {
-    fail("INVALID_ARGUMENT", `collapseKey must be 1 to ${String(MAX_COLLAPSE_KEY_BYTES)} bytes`);
+  if (input.collapseKey !== undefined && !(HEADER_TEXT.test(input.collapseKey) && byteLength(input.collapseKey) <= MAX_COLLAPSE_KEY_BYTES)) {
+    fail("INVALID_ARGUMENT", `collapseKey must be 1 to ${String(MAX_COLLAPSE_KEY_BYTES)} printable ASCII characters`);
   }
   checkInteger("ttlSeconds", input.ttlSeconds, 0, MAX_TTL_SECONDS);
   checkInteger("badge", input.badge, 0, 1_000_000);
@@ -84,7 +88,12 @@ export function checkSendInput(input: SendInput): void {
 export function checkSendConfig(config: SendConfig): void {
   checkInteger("maxAttempts", config.maxAttempts, 1, MAX_MAX_ATTEMPTS);
   checkInteger("maxParallelism", config.maxParallelism, 1, MAX_MAX_PARALLELISM);
-  for (const { appRef } of config.apps) checkRef("appRef", appRef);
+  for (const { appRef, app } of config.apps) {
+    checkRef("appRef", appRef);
+    if (app.platform === "apns" && !HEADER_TOKEN.test(app.topic)) {
+      fail("INVALID_ARGUMENT", `app ${appRef} topic must be printable ASCII without spaces`);
+    }
+  }
   for (const { provider, handle } of config.providers) {
     checkRef("provider", provider);
     if (!isHandleString(handle)) fail("INVALID_ARGUMENT", `provider ${provider} needs a function handle`);
@@ -96,8 +105,10 @@ export function checkSendConfig(config: SendConfig): void {
 
 /**
  * Whether a string has the form of a Convex function handle. Handles are made
- * by `createFunctionHandle` in the host; a plain function name is refused so a
- * stored value can never call one of the component's own functions by name.
+ * by `createFunctionHandle` in the host; a plain function name is refused, so a
+ * stored value is not taken as one of the component's own function names. This
+ * is a form check, not a security boundary: the host is trusted to pass its
+ * own handles.
  * @param value - The stored or supplied string.
  * @returns Whether it starts with `function://`.
  */
