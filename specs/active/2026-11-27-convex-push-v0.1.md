@@ -1,8 +1,8 @@
 # Spec: @vllnt/convex-push v0.1.0 (canary)
 
 **Status:** built, in review. **Date:** 2026-11-27.
-**Source:** the convex-push design doc, revision 2 (27 Nov 2026), held by the
-owner and not committed. Its content is converted into this spec, `README.md`,
+**Source:** the convex-push design doc, revision 2 (27 Nov 2026), not
+committed. Its content is converted into this spec, `README.md`,
 `docs/API.md`, `ROADMAP.md` and `llms.txt`; "the doc" below means it.
 
 ## Outcome
@@ -223,13 +223,13 @@ Defaults and choices the doc marks proposed or leaves open:
 | `@vllnt/eslint-config` | yes | `convex` preset, as the reference |
 | `@vllnt/typescript` | yes | shared tsconfig, as the reference |
 | `@vllnt/logger` | yes | `createConvexLogger` for structured, content-free logs |
-| `@vllnt/testing` | no | not published to npm, and it is a Playwright end-to-end framework; this package has no UI |
+| `@vllnt/testing` | no | a Playwright end-to-end framework; this package has no UI |
 | `@vllnt/convex-helpers` | no | host-side auth, cookie and MCP helpers; nothing here needs them |
 | `@convex-dev/workpool` | yes | per-provider queues, `runAt` for delayed retries, completion callbacks |
 | `@convex-dev/rate-limiter` | yes | per-device fuse and per-app burst breaker |
 | `@convex-dev/action-retrier` | no | retries only thrown errors with its own backoff; cannot honour `Retry-After`, message expiry or the four-result contract |
 | `@convex-dev/expo-push-notifications` | no | the official push component sends through Expo's hosted relay, which holds the Apple and Google credentials; this package exists to send direct, with no relay |
-| `convex-helpers` | indirect | required peer of `@convex-dev/workpool` 0.5; no source file imports it. An exception to the fleet dependency policy, to record in the hub |
+| `convex-helpers` | indirect | required peer of `@convex-dev/workpool` 0.5; no source file imports it. An exception to the vllnt dependency policy |
 
 ## Front-end tooling
 

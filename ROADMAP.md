@@ -7,9 +7,10 @@
 **Now:** `v0-1-canary` built, waiting for owner review. Next: `real-device-smoke`.
 **Last updated:** 2026-11-27
 
-> **Hold:** the repo is private and canary publishing is off (`CANARY_ENABLED`
-> unset; a manual run does not bypass it). The owner switches it on. A pushed
-> `vX.Y.Z` tag would still publish a stable release.
+> **Hold:** canary publishing from CI is off (`CANARY_ENABLED` unset; a manual
+> run does not bypass it). The owner claims the npm name once with
+> `scripts/first-canary-publish.sh`, then switches it on. A pushed `vX.Y.Z` tag
+> would still publish a stable release.
 
 ## v0-1-canary [BUILT 2026-11, in review]
 
@@ -56,8 +57,8 @@ Needs real Apple and Google credentials and test devices (owner).
 **Goal:** One real app sends through the component (Rule of Three: the owner
 names the first adopter and a likely second).
 
-- [ ] first-adopter.1 Wire the ticket-reply flow in the adopting app — check: a reply reaches a phone; `status` shows `sent`
-- [ ] first-adopter.2 Hub index row and canary publish switched on by the owner — check: `npm view @vllnt/convex-push@canary`
+- [ ] first-adopter.1 Wire one real send path in the first adopting app — check: a reply reaches a phone; `status` shows `sent`
+- [ ] first-adopter.2 Canary publish switched on by the owner — check: `npm view @vllnt/convex-push@canary`
 
 ## Later
 
