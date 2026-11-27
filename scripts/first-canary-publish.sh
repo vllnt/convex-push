@@ -11,14 +11,16 @@
 #
 # Usage: bash scripts/first-canary-publish.sh [--dry-run|--publish|--trust]
 #   --dry-run  (default) every check, the version stamp and
-#              `npm publish --dry-run`; nothing leaves the machine.
+#              `npm publish --dry-run`; nothing is published (it still
+#              reads from git, npm and the pnpm store).
 #   --publish  publish {version}-canary.{sha7} on the canary dist-tag, then
 #              link the trusted publisher (same as --trust).
 #   --trust    only link the trusted publisher, for a package that already
 #              exists (use it if --publish stopped after the publish).
 #
 # Needs npm >= 11.15.0 (for `npm trust`), an npm login with 2FA and write
-# access to the scope. npm asks for a one-time password when it needs one.
+# access to the scope; a granular token that bypasses 2FA cannot run
+# `npm trust`. npm asks for a one-time password when it needs one.
 #
 # Exit codes: 0 done, 1 a check failed, 2 misuse.
 
@@ -75,12 +77,21 @@ NPM_VERSION="$(npm --version)"
 [[ "$(printf '%s\n%s\n' "$MIN_NPM" "$NPM_VERSION" | sort -V | head -1)" == "$MIN_NPM" ]] \
   || fail "npm $NPM_VERSION is too old; npm trust needs $MIN_NPM or newer (npm install -g npm@^$MIN_NPM)"
 
-PUBLISHED="$(npm view "$PKG" version 2>/dev/null || true)"
+registry_name() {
+  local out
+  if out="$(npm view "$1" name 2>&1)"; then
+    printf '%s' "$out"
+  elif ! grep -q "E404" <<<"$out"; then
+    fail "could not ask npm about $1: $(tail -1 <<<"$out")"
+  fi
+}
+
+PUBLISHED="$(registry_name "$PKG")"
 if [[ "$MODE" == "trust" ]]; then
   [[ -n "$PUBLISHED" ]] || fail "$PKG is not on npm yet; run --publish instead"
 else
   [[ -z "$PUBLISHED" ]] \
-    || fail "$PKG is already on npm ($PUBLISHED); the name is claimed, so publish through $WORKFLOW_FILE (or run --trust)"
+    || fail "$PKG is already on npm; the name is claimed, so publish through $WORKFLOW_FILE (or run --trust)"
 fi
 
 if [[ "$MODE" != "dry-run" ]]; then
@@ -90,7 +101,8 @@ fi
 
 link_trust() {
   step "Linking the trusted publisher: $REPO, workflow $WORKFLOW_FILE"
-  npm trust github "$PKG" --repo "$REPO" --file "$WORKFLOW_FILE" --allow-publish --yes
+  npm trust github "$PKG" --repo "$REPO" --file "$WORKFLOW_FILE" --allow-publish --yes \
+    || fail "${1:-}linking the trusted publisher failed; fix the npm login (2FA, no bypass-2FA token), then run: bash scripts/first-canary-publish.sh --trust"
   npm trust list "$PKG"
 }
 
@@ -105,10 +117,12 @@ else
   pnpm build
   bash scripts/check-package-contents.sh
 
-  VERSION="${BASE}-canary.$(git rev-parse --short=7 HEAD)"
-  step "Stamping $PKG@$VERSION (package.json is restored on exit)"
+  SHA="$(git rev-parse HEAD)"
+  STAMP="${BASE}-canary.${SHA:0:7}"
+  step "Stamping $PKG@$STAMP (package.json is restored on exit)"
   trap 'git checkout --quiet -- package.json' EXIT
-  npm version "$VERSION" --no-git-tag-version --ignore-scripts
+  npm version "$STAMP" --no-git-tag-version --ignore-scripts
+  VERSION="$(node -p "require('./package.json').version")"
 
   if [[ "$MODE" == "dry-run" ]]; then
     step "Dry run: npm publish --dry-run"
@@ -122,7 +136,7 @@ else
   git checkout --quiet -- package.json
   trap - EXIT
 
-  link_trust
+  link_trust "published $PKG@$VERSION, but "
   [[ "$(npm view "$PKG@canary" version 2>/dev/null || true)" == "$VERSION" ]] \
     || echo "warning: npm does not show $VERSION on @canary yet; check again in a minute" >&2
 fi

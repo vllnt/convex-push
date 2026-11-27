@@ -23,20 +23,28 @@ case "$1" in
   --version) echo "${FAKE_NPM_VERSION:-11.19.1}" ;;
   view)
     if [[ "$2" == *@canary ]]; then cat "$CALLS_LOG.version" 2>/dev/null; exit 0; fi
-    if [[ -n "${FAKE_PUBLISHED:-}" ]]; then echo "$FAKE_PUBLISHED"; else exit 1; fi
+    if [[ -n "${FAKE_NPM_DOWN:-}" ]]; then echo "npm error code ECONNRESET" >&2; exit 1; fi
+    if [[ -n "${FAKE_PUBLISHED:-}" ]]; then echo "$2"; exit 0; fi
+    echo "npm error code E404" >&2
+    exit 1
     ;;
+  trust) [[ "$2" == github && -n "${FAKE_TRUST_FAIL:-}" ]] && exit 1 ;;
   whoami) [[ -z "${FAKE_LOGGED_OUT:-}" ]] && echo maintainer || exit 1 ;;
   version)
     echo "$2" > "$CALLS_LOG.version"
     node -e "const f=require('fs');const p=JSON.parse(f.readFileSync('package.json','utf8'));p.version=process.argv[1];f.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')" "$2"
     ;;
-  publish) grep -q '"version": "0.1.0-canary' package.json || { echo "unstamped" >&2; exit 1; } ;;
+  publish)
+    grep -q '"version": "0.1.0-canary' package.json || { echo "unstamped" >&2; exit 1; }
+    [[ -z "${FAKE_PUBLISH_FAIL:-}" ]] || exit 1
+    ;;
 esac
 exit 0
 STUB
 cat > "$BIN/pnpm" <<'STUB'
 #!/usr/bin/env bash
 echo "pnpm $*" >> "$CALLS_LOG"
+[[ "$1" != "${FAKE_FAIL_PNPM:-}" ]]
 STUB
 chmod +x "$BIN/npm" "$BIN/pnpm"
 
@@ -110,7 +118,9 @@ expect "unknown option is misuse" 2 "unknown option"
 MODE_ARG=()
 run
 expect "dry run stamps the canary version" 0 "npm version 0.1.0-canary.$SHA --no-git-tag-version --ignore-scripts"
-expect "dry run runs the gates" 0 "pnpm test:coverage"
+for gate in "pnpm install --frozen-lockfile" "pnpm lint" "pnpm typecheck:ci" "pnpm test:coverage" "pnpm build"; do
+  expect "dry run runs $gate" 0 "$gate"
+done
 expect "dry run checks package contents" 0 "contents"
 expect "dry run uses npm publish --dry-run" 0 "npm publish --dry-run --tag canary --access public --ignore-scripts"
 refute_call "dry run needs no login" "npm whoami"
@@ -124,6 +134,25 @@ expect "publish links the trusted publisher" 0 "npm trust github @example/pkg --
 expect "publish prints the next step" 0 "gh variable set CANARY_ENABLED --body true --repo example/pkg"
 refute_call "publish never dry-runs" "--dry-run"
 clean_tree "publish restores package.json"
+
+run FAKE_FAIL_PNPM=lint
+expect "a failing gate stops the run" 1 "pnpm lint"
+refute_call "no stamp after a failing gate" "npm version"
+refute_call "no publish after a failing gate" "npm publish"
+
+run FAKE_PUBLISH_FAIL=1
+expect "a failed publish exits non-zero" 1 "npm publish --tag canary"
+refute_call "no trust link after a failed publish" "npm trust"
+clean_tree "a failed publish restores package.json"
+
+run FAKE_TRUST_FAIL=1
+expect "a failed trust link names the recovery step" 1 "published @example/pkg@0.1.0-canary.$SHA, but linking the trusted publisher failed"
+expect "the recovery step is --trust" 1 "first-canary-publish.sh --trust"
+clean_tree "a failed trust link leaves package.json restored"
+
+run FAKE_NPM_DOWN=1
+expect "a registry error is not read as a free name" 1 "could not ask npm"
+refute_call "no publish when npm is unreachable" "npm publish"
 
 run FAKE_LOGGED_OUT=1
 expect "publish needs an npm login" 1 "not logged in to npm"

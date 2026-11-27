@@ -94,8 +94,17 @@ jobs:
           fi
           CANARY_VERSION="${BASE_VERSION}-canary.${GITHUB_SHA::7}"
           npm version "$CANARY_VERSION" --no-git-tag-version --ignore-scripts
+          CANARY_VERSION=$(node -p "require('./package.json').version")
+          # The first canary is published by hand from a main commit; a run on
+          # that same commit must not try to publish it again.
+          if [ -n "$(npm view "${PKG}@${CANARY_VERSION}" version 2>/dev/null || true)" ]; then
+            echo "${PKG}@${CANARY_VERSION} is already published"
+            exit 0
+          fi
           PROVENANCE=()
-          [ "$REPO_PRIVATE" = "false" ] && PROVENANCE=(--provenance)
+          if [ "$REPO_PRIVATE" = "false" ]; then
+            PROVENANCE=(--provenance)
+          fi
           npm publish --tag canary "${PROVENANCE[@]}" --access public --ignore-scripts
 
   release:
@@ -151,7 +160,9 @@ jobs:
             echo "${PKG}@${VERSION} is already published"
           else
             PROVENANCE=()
-            [ "$REPO_PRIVATE" = "false" ] && PROVENANCE=(--provenance)
+            if [ "$REPO_PRIVATE" = "false" ]; then
+              PROVENANCE=(--provenance)
+            fi
             npm publish --tag latest "${PROVENANCE[@]}" --access public --ignore-scripts
           fi
 
