@@ -1,0 +1,33 @@
+# @vllnt/convex-push
+
+> Push notifications sent straight from a Convex backend to Apple (APNs), Google (FCM HTTP v1) and browser push services (Web Push), as a Convex component. Device registry, durable send queue, retries, dead-device cleanup and an encrypted provider-token cache, with no relay service.
+
+`@vllnt/convex-push` is a publishable Convex component. Keys are bound to the component as environment variables at mount and never stored. Hosts extend it with a custom provider (one action), a delivery hook (one mutation) and `rawJson` payload fields. Requires `convex@^1.47.0` and uses `@convex-dev/workpool` and `@convex-dev/rate-limiter`. Version 0.1.0 is a canary: delivery to real devices is not verified yet.
+
+For coding agents: this file, the API reference and the changelog are bundled in the npm package at `node_modules/@vllnt/convex-push/`, next to the source in `src/`. They match the installed version. Read them before writing code against this package.
+
+## Docs
+
+- [README](./README.md): Overview, installation with env binding, usage, extension points, security model and limits
+- [API Reference](./docs/API.md): Package exports, `Push` class methods, validators, provider answers, error codes and the delivery lifecycle
+- [Changelog](./CHANGELOG.md): Version history and release notes
+- [Contributing](https://github.com/vllnt/convex-push/blob/main/CONTRIBUTING.md): Development setup, validation commands, and release workflow notes
+
+## Examples
+
+These files are on GitHub `main` and may be newer than the installed version.
+
+- [Example host app](https://github.com/vllnt/convex-push/blob/main/example/convex/example.ts): Two mounts, the four platforms, a custom webhook provider and a delivery hook
+- [Example tests](https://github.com/vllnt/convex-push/blob/main/example/convex/example.test.ts): End-to-end behaviour with `convex-test` and recorded provider responses
+
+## Ecosystem
+
+- [vllnt oss](https://oss.vllnt.com/llms.txt): Index of the other vllnt open-source packages
+
+## Optional
+
+- [AGENTS](https://github.com/vllnt/convex-push/blob/main/AGENTS.md): Agent instructions for contributors to this repository
+- [Roadmap](https://github.com/vllnt/convex-push/blob/main/ROADMAP.md): What ships next and what waits for a consumer
+- [Security Policy](https://github.com/vllnt/convex-push/blob/main/SECURITY.md): Vulnerability reporting policy
+- [Code of Conduct](https://github.com/vllnt/convex-push/blob/main/CODE_OF_CONDUCT.md): Community participation guidelines
+- [License](./LICENSE): MIT license
