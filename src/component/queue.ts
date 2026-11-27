@@ -195,13 +195,23 @@ interface Plan {
   apns?: { topic: string; environment: "production" | "sandbox" };
 }
 
-async function planDelivery(
-  ctx: MutationCtx,
+/**
+ * The APNs apps whose burst breaker is open, checked once per app rather than
+ * once per device.
+ */
+async function pausedApnsApps(ctx: MutationCtx, devices: Doc<"devices">[], apps: ReadonlyMap<string, AppConfig>): Promise<Set<string>> {
+  const appRefs = new Set(devices.filter((d) => apps.get(d.appRef)?.platform === "apns").map((d) => d.appRef));
+  const checks = await Promise.all([...appRefs].map(async (key) => ({ key, open: !(await limiter.check(ctx, "badDeviceToken", { key })).ok })));
+  return new Set(checks.filter((c) => c.open).map((c) => c.key));
+}
+
+function planDelivery(
   device: Doc<"devices">,
   silent: boolean,
   apps: ReadonlyMap<string, AppConfig>,
   providers: ReadonlyMap<string, string>,
-): Promise<Plan> {
+  paused: ReadonlySet<string>,
+): Plan {
   const app = apps.get(device.appRef);
   if (!appMatches(app, device.address)) return { status: "failed", errorCode: "APP_NOT_CONFIGURED" };
   if (app.platform === "custom") {
@@ -213,8 +223,7 @@ async function planDelivery(
   if (app.platform === "webpush" && silent) return { status: "failed", errorCode: "SILENT_NOT_SUPPORTED" };
   if (app.platform === "apns") {
     const target = { topic: app.topic, environment: app.environment };
-    const breaker = await limiter.check(ctx, "badDeviceToken", { key: device.appRef });
-    return breaker.ok ? { status: "queued", apns: target } : { status: "failed", errorCode: "APP_PAUSED", apns: target };
+    return paused.has(device.appRef) ? { status: "failed", errorCode: "APP_PAUSED", apns: target } : { status: "queued", apns: target };
   }
   return { status: "queued" };
 }
@@ -279,10 +288,11 @@ export async function enqueueMessage(
   const apps = new Map(config.apps.map((a) => [a.appRef, a.app]));
   const providers = new Map(config.providers.map((p) => [p.provider, p.handle]));
   const message = { _id: messageId, onDeliveryHandle: config.onDeliveryHandle };
+  const paused = await pausedApnsApps(ctx, devices, apps);
   const finished: FinishedDelivery[] = [];
   await Promise.all(
     devices.map(async (device) => {
-      const planned = await planDelivery(ctx, device, silent, apps, providers);
+      const planned = planDelivery(device, silent, apps, providers, paused);
       const fuse = planned.status === "queued" ? await limiter.limit(ctx, "device", { key: device._id, reserve: true }) : null;
       const retryAfter = fuse?.retryAfter ?? 0;
       const plan: Plan = now + retryAfter >= expiresAt ? { ...planned, status: "failed", errorCode: "TTL_EXPIRED" } : planned;
@@ -294,7 +304,7 @@ export async function enqueueMessage(
         platform,
         ...plan,
         attempts: 0,
-        nextAttemptAt: retryAfter > 0 ? now + retryAfter : undefined,
+        nextAttemptAt: plan.status === "queued" && retryAfter > 0 ? now + retryAfter : undefined,
         updatedAt: now,
       });
       if (plan.status === "queued") {

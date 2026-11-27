@@ -27,7 +27,7 @@ export default defineSchema({
   })
     .index("by_address_hash", ["addressHash"])
     .index("by_subject_status", ["subjectRef", "status"])
-    .index("by_install", ["installRef"])
+    .index("by_install", ["installRef", "appRef"])
     .index("by_status_seen", ["status", "lastSeenAt"]),
 
   /** One logical notification to one subject or to named devices. */

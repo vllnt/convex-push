@@ -6,6 +6,7 @@ import {
   MAX_BATCH_MESSAGES,
   MAX_DEVICES_PER_MESSAGE,
   MAX_PRUNE_BATCH,
+  PRUNE_DEVICES_PER_PASS,
   PRUNE_GRACE_MS,
   PRUNE_MESSAGES_PER_PASS,
 } from "../shared.js";
@@ -50,9 +51,9 @@ export const register = mutation({
         ? null
         : await ctx.db
             .query("devices")
-            .withIndex("by_install", (q) => q.eq("installRef", args.installRef))
+            .withIndex("by_install", (q) => q.eq("installRef", args.installRef).eq("appRef", args.appRef))
             .first();
-    const existing = byAddress ?? (byInstall?.appRef === args.appRef ? byInstall : null);
+    const existing = byAddress ?? byInstall;
     if (!existing) {
       const deviceId = await ctx.db.insert("devices", {
         subjectRef: args.subjectRef,
@@ -194,8 +195,8 @@ export const cancel = mutation({
  * Delete messages older than the retention window (and expired more than a day
  * ago, so no send job is still on its way) with their deliveries, devices
  * invalid and unseen for that long, and expired cached tokens. One pass deletes
- * about `batch` rows (default and maximum 4,000) and reschedules itself while
- * there is more. Idempotent.
+ * about `batch` rows (default and maximum 1,000; at most 100 devices) and
+ * reschedules itself while there is more. Idempotent.
  */
 export const prune = mutation({
   args: { retentionMs: v.optional(v.number()), batch: v.optional(v.number()) },
@@ -240,16 +241,16 @@ export const prune = mutation({
     const devices = await ctx.db
       .query("devices")
       .withIndex("by_status_seen", (q) => q.eq("status", "invalid").lt("lastSeenAt", cutoff))
-      .take(room);
+      .take(Math.min(room, PRUNE_DEVICES_PER_PASS));
     for (const device of devices) {
       await ctx.db.delete("devices", device._id);
       await forgetDevice(ctx, device._id);
     }
-    const tokens = await ctx.db.query("providerTokens").take(MAX_PRUNE_BATCH);
+    const tokens = await ctx.db.query("providerTokens").take(PRUNE_MESSAGES_PER_PASS);
     const expiredTokens = tokens.filter((t) => t.expiresAt < now);
     await Promise.all(expiredTokens.map((t) => ctx.db.delete("providerTokens", t._id)));
     deleted += devices.length + expiredTokens.length;
-    const more = stopped || devices.length === room || (old.length === pageSize && doomed.length > 0);
+    const more = stopped || devices.length === Math.min(room, PRUNE_DEVICES_PER_PASS) || (old.length === pageSize && doomed.length > 0);
     if (more) await ctx.scheduler.runAfter(0, api.mutations.prune, { retentionMs, batch });
     return { deleted, more };
   },

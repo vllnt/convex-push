@@ -38,11 +38,11 @@ function checkPrintable(field: string, value: string, max: number): void {
 }
 
 /** Host names that only resolve inside a machine or a private network. */
-const PRIVATE_HOST = /(^localhost$)|\.(localhost|local|internal|lan|home\.arpa)$/;
+const PRIVATE_HOST = /(^localhost$)|\.(localhost|local|localdomain|internal|intranet|lan|corp|svc|test|arpa)$/;
 
 /**
  * Whether a URL is https on the default port, with no credentials, to a public
- * host name. IP literals and private names are refused, so a registered
+ * host name. IP literals, a trailing dot and private names are refused, so a registered
  * endpoint cannot point the send action at the deployment's own network.
  * DNS answers are not checked (a public name may still resolve privately).
  * @param value - The URL.
@@ -57,6 +57,7 @@ export function isPublicHttpsUrl(value: string): boolean {
   }
   const host = url.hostname.toLowerCase();
   const ipLiteral = host.startsWith("[") || /^[\d.]+$/.test(host);
+  const trailingDot = host.endsWith(".");
   return (
     url.protocol === "https:" &&
     url.port === "" &&
@@ -64,6 +65,7 @@ export function isPublicHttpsUrl(value: string): boolean {
     url.password === "" &&
     host.includes(".") &&
     !ipLiteral &&
+    !trailingDot &&
     !PRIVATE_HOST.test(host)
   );
 }

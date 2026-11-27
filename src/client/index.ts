@@ -215,7 +215,8 @@ export class Push {
   }
 
   /**
-   * Enqueue up to 100 messages in one transaction.
+   * Enqueue up to 100 messages and 100 deliveries in one transaction. Over
+   * that it throws `INVALID_ARGUMENT` and queues nothing.
    * @param ctx - A mutation context.
    * @param messages - The messages.
    * @returns One result per message, in order.

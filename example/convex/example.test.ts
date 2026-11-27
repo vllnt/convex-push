@@ -167,6 +167,8 @@ describe("device registry", () => {
     expect(c.created).toBe(true);
     const otherApp = await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "web", address: web(1), installRef: "install-1" });
     expect(otherApp.created).toBe(true);
+    const rotatedWeb = await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "web", address: web(2), installRef: "install-1" });
+    expect(rotatedWeb).toEqual({ deviceId: otherApp.deviceId, created: false });
   });
 
   test("a changed installRef or locale updates the row", async () => {
@@ -379,16 +381,18 @@ describe("sending through the built-in providers and a custom provider", () => {
     );
   });
 
-  test("a subject fans out to its first 100 devices; sendBatch refuses more than 1,000 deliveries", async () => {
+  test("a subject fans out to its first 100 devices; sendBatch refuses more than 100 deliveries", async () => {
     const t = setup();
     for (let i = 0; i < 101; i++) await t.mutation(api.example.registerDevice, { subjectRef: "big", appRef: "android", address: fcm(i) });
-    const many = Array.from({ length: 11 }, () => "big");
-    const deduped = await t.mutation(api.example.sendBatch, { subjectRefs: many, title: "Hi", idempotencyKey: "once" });
-    expect(deduped.map((r) => r.deliveries)).toEqual(Array.from({ length: 11 }, () => 100));
-    expect(deduped.filter((r) => r.deduplicated)).toHaveLength(10);
+    const twice = ["big", "big"];
+    const deduped = await t.mutation(api.example.sendBatch, { subjectRefs: twice, title: "Hi", idempotencyKey: "once" });
+    expect(deduped.map((r) => [r.deliveries, r.deduplicated])).toEqual([
+      [100, false],
+      [100, true],
+    ]);
     expect(logs.join("\n")).toContain("message.device_cap");
-    await expect(t.mutation(api.example.sendBatch, { subjectRefs: many, title: "Hi" })).rejects.toThrow(/more than 1000 deliveries/);
-  }, 60_000);
+    await expect(t.mutation(api.example.sendBatch, { subjectRefs: twice, title: "Hi" })).rejects.toThrow(/more than 100 deliveries/);
+  }, 30_000);
 
   test("listBySubject is newest first with a limit", async () => {
     const t = setup();
@@ -612,9 +616,12 @@ describe("retries, expiry and dead devices", () => {
     const t = setup();
     await t.mutation(api.example.registerDevice, { subjectRef: "u1", appRef: "desktop", address: hook(1) });
     const results = await t.mutation(api.example.sendBatch, { subjectRefs: Array.from({ length: 91 }, () => "u1"), title: "Hi", ttlSeconds: 0 });
-    const codes = await Promise.all(results.map(async (r) => (await statusOf(t, r.messageId)).deliveries[0]?.errorCode));
-    expect(codes.slice(0, 89).every((c) => c === undefined)).toBe(true);
-    expect(codes.slice(89)).toEqual(["TTL_EXPIRED", "TTL_EXPIRED"]);
+    const deliveries = await Promise.all(results.map(async (r) => (await statusOf(t, r.messageId)).deliveries[0]));
+    expect(deliveries.slice(0, 89).every((d) => d?.errorCode === undefined)).toBe(true);
+    expect(deliveries.slice(89).map((d) => [d?.errorCode, d?.nextAttemptAt])).toEqual([
+      ["TTL_EXPIRED", undefined],
+      ["TTL_EXPIRED", undefined],
+    ]);
   });
 });
 
@@ -754,6 +761,15 @@ describe("provider tokens and secrets", () => {
       ["sent", 2],
       ["sent", 2],
     ]);
+    respond("api.push.apple.com", Response.json({ reason: "Unregistered" }, { status: 410 }));
+    respond("fcm.googleapis.com", Response.json({ error: { status: "INVALID_ARGUMENT" } }, { status: 400 }));
+    respond("push.example", new Response(null, { status: 404 }));
+    for (let i = 0; i < 5; i++) respond("hook.example", new Error("connection reset"));
+    const terminal = await t.mutation(api.example.send, { subjectRef: "u1", title: "Private title", body: "Private body", data: { privateKey: "private-value" } });
+    const cancelled = await t.mutation(api.example.send, { subjectRef: "u1", title: "Private title", body: "Private body" });
+    await t.mutation(api.example.cancel, { messageId: cancelled.messageId });
+    await drain(t);
+    expect((await statusOf(t, terminal.messageId)).deliveries.map((x) => x.status).sort()).toEqual(["failed", "failed", "invalid", "invalid"]);
     const jwt = new Headers(calls.find((c) => c.url.host === "api.push.apple.com")?.init.headers).get("authorization")?.replace("bearer ", "") ?? "";
     const vapidJwt = /t=([^,]+)/.exec(new Headers(calls.find((c) => c.url.host === "push.example")?.init.headers).get("authorization") ?? "")?.[1] ?? "";
     expect(jwt.length).toBeGreaterThan(20);
@@ -765,6 +781,8 @@ describe("provider tokens and secrets", () => {
     const stored = await dumpAll(t);
     expect(mounts.map((m) => m.mount)).toContain("push/apnsPool");
     expect(stored).toMatch(/push\/apnsPool: .*"fnArgs":\{"deliveryId"/);
+    expect(stored).toMatch(/^push: .*"name":"internal_mutations:scrub"/m);
+    expect(stored).toMatch(/^push: .*"name":"example:onDelivery"/m);
     for (const s of [...secrets, ...content]) expect(stored).not.toContain(s);
     expect(await dumpTables(t)).toMatch(/"providerTokens":\[\{.*"cipher"/);
     const returned = JSON.stringify([

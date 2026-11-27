@@ -225,15 +225,12 @@ describe("keys from component env", () => {
     expect(await readFcm({})).toEqual({ ok: false, code: "PROVIDER_NOT_CONFIGURED" });
     expect(await readFcm({ FCM_SERVICE_ACCOUNT_JSON: "not json" })).toEqual({ ok: false, code: "CREDENTIALS_INVALID" });
     expect(await readFcm({ FCM_SERVICE_ACCOUNT_JSON: "[]" })).toEqual({ ok: false, code: "CREDENTIALS_INVALID" });
-    expect(await readFcm({ FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({ project_id: "p", client_email: "e", private_key: "k", token_uri: "http://x" }) })).toEqual({
+    expect(await readFcm({ FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({ project_id: "p", client_email: "e" }) })).toEqual({
       ok: false,
       code: "CREDENTIALS_INVALID",
     });
     const withUri = (tokenUri: string): PushEnv => ({ FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({ project_id: "p", client_email: "e", private_key: "k", token_uri: tokenUri }) });
-    for (const uri of ["https://attacker.example/token", "https://oauth2.googleapis.com.attacker.example/t", "https://oauth2.googleapis.com:8443/token", "not a url"]) {
-      expect(await readFcm(withUri(uri))).toEqual({ ok: false, code: "CREDENTIALS_INVALID" });
-    }
-    expect(await readFcm(withUri("https://oauth2.googleapis.com/token"))).toMatchObject({ ok: true });
+    expect(await readFcm(withUri("https://attacker.example/token"))).toMatchObject({ ok: true, value: { tokenUri: "https://oauth2.googleapis.com/token" } });
     expect(await readFcm({ FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({ project_id: "p", client_email: "e", private_key: "k", private_key_id: "kid" }) })).toMatchObject({
       ok: true,
       value: { tokenUri: "https://oauth2.googleapis.com/token" },

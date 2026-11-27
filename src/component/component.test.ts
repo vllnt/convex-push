@@ -217,6 +217,14 @@ describe("input checks", () => {
       "https://metadata.google.internal/s",
       "https://router.lan/s",
       "https://nas.home.arpa/s",
+      "https://localhost./s",
+      "https://metadata.google.internal./s",
+      "https://push.example./s",
+      "https://api.corp/s",
+      "https://db.svc/s",
+      "https://host.localdomain/s",
+      "https://intranet.intranet/s",
+      "https://site.test/s",
       "not a url",
     ]) {
       expect(isPublicHttpsUrl(url)).toBe(false);
