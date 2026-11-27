@@ -82,13 +82,13 @@ registry_name() {
   if out="$(npm view "$1" name 2>&1)"; then
     printf '%s' "$out"
   elif ! grep -q "E404" <<<"$out"; then
-    fail "could not ask npm about $1: $(tail -1 <<<"$out")"
+    fail "could not ask npm about $1: $(grep -m1 "npm error code" <<<"$out" || head -1 <<<"$out")"
   fi
 }
 
 PUBLISHED="$(registry_name "$PKG")"
 if [[ "$MODE" == "trust" ]]; then
-  [[ -n "$PUBLISHED" ]] || fail "$PKG is not on npm yet; run --publish instead"
+  [[ -n "$PUBLISHED" ]] || fail "$PKG is not on npm yet (just published? wait a minute and retry); otherwise run --publish"
 else
   [[ -z "$PUBLISHED" ]] \
     || fail "$PKG is already on npm; the name is claimed, so publish through $WORKFLOW_FILE (or run --trust)"
@@ -103,7 +103,7 @@ link_trust() {
   step "Linking the trusted publisher: $REPO, workflow $WORKFLOW_FILE"
   npm trust github "$PKG" --repo "$REPO" --file "$WORKFLOW_FILE" --allow-publish --yes \
     || fail "${1:-}linking the trusted publisher failed; fix the npm login (2FA, no bypass-2FA token), then run: bash scripts/first-canary-publish.sh --trust"
-  npm trust list "$PKG"
+  npm trust list "$PKG" || echo "warning: npm trust list failed; check the link with: npm trust list $PKG" >&2
 }
 
 if [[ "$MODE" == "trust" ]]; then

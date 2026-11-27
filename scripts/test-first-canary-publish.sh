@@ -173,6 +173,9 @@ refute_call "trust publishes nothing" "npm publish"
 run
 expect "trust needs a published package" 1 "not on npm yet"
 
+run FAKE_PUBLISHED=0.1.0-canary.abc1234 FAKE_TRUST_FAIL=1
+expect "a failed --trust names the retry" 1 "first-canary-publish.sh --trust"
+
 MODE_ARG=()
 printf 'x\n' > "$REPO/stray.txt"
 run
