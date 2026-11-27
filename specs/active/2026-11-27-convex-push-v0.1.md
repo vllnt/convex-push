@@ -192,9 +192,10 @@ Defaults and choices the doc marks proposed or leaves open:
   passes its own handles and is trusted.
 - `convex-helpers` is a runtime dependency because `@convex-dev/workpool` 0.5
   requires it as a peer. Peer `convex@^1.47.0` follows workpool 0.5's peer range.
-- `publish.yml` keeps a `CANARY_ENABLED` repository-variable gate (as in
-  `convex-email`; the reference no longer has it). A canary, from a push or a
-  manual run, publishes only while it is `true`. A stable release still
+- `publish.yml` is the reference's: every push to `main` touching the package
+  publishes a canary through npm trusted publishing, with provenance. The very
+  first canary was published once by hand to claim the name, since npm links a
+  trusted publisher only to a package that already exists. A stable release
   publishes from a pushed `vX.Y.Z` tag, which is a deliberate owner action.
 
 ## Gaps against the doc
