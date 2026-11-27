@@ -62,8 +62,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Enforces the 100% coverage gate (thresholds live in vitest.config.mts).
       - run: pnpm test:coverage
-      - name: Test the first-canary publish script
-        run: bash scripts/test-first-canary-publish.sh
 
   build:
     name: Build

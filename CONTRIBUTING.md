@@ -46,25 +46,10 @@ pnpm test:watch    # watch mode
 ## Releases
 
 Maintainers only. Every publish runs in `.github/workflows/publish.yml` with npm
-trusted publishing (no npm token). Provenance is added once the repository is
-public; npm rejects it from a private one.
-
-The one exception is the very first version: npm links a trusted publisher only
-to a package that already exists, so a maintainer claims the name once by hand.
-From a clean, up-to-date `main`, logged in to npm with 2FA:
-
-```bash
-bash scripts/first-canary-publish.sh            # every check plus npm publish --dry-run
-bash scripts/first-canary-publish.sh --publish  # publish the canary, link publish.yml as trusted publisher
-gh variable set CANARY_ENABLED --body true --repo vllnt/convex-push
-```
-
-If `--publish` stops after the publish, `--trust` links the trusted publisher
-alone. After that, nothing is published from a local machine.
+trusted publishing and provenance; nothing is published from a local machine.
 
 - Canary (`@canary`): every push to `main` that touches the package or its
-  shipped docs publishes one while the repository variable `CANARY_ENABLED` is
-  `true`. A manual run on `main` publishes only under the same condition.
+  shipped docs publishes one; you can also run the workflow manually on `main`.
 - Stable (`@latest`): merge a PR that sets `package.json` `version` and adds a
   matching `## [X.Y.Z]` entry to `CHANGELOG.md`, then push the tag `vX.Y.Z` on
   that `main` commit.
