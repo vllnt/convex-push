@@ -8,7 +8,8 @@
 **Last updated:** 2026-11-27
 
 > **Hold:** the repo is private and canary publishing is off (`CANARY_ENABLED`
-> unset). The owner switches it on.
+> unset; a manual run does not bypass it). The owner switches it on. A pushed
+> `vX.Y.Z` tag would still publish a stable release.
 
 ## v0-1-canary [BUILT 2026-11, in review]
 

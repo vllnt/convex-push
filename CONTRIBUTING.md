@@ -50,7 +50,7 @@ trusted publishing and provenance; nothing is published from a local machine.
 
 - Canary (`@canary`): every push to `main` that touches the package or its
   shipped docs publishes one while the repository variable `CANARY_ENABLED` is
-  `true`; you can also run the workflow manually on `main`.
+  `true`. A manual run on `main` publishes only under the same condition.
 - Stable (`@latest`): merge a PR that sets `package.json` `version` and adds a
   matching `## [X.Y.Z]` entry to `CHANGELOG.md`, then push the tag `vX.Y.Z` on
   that `main` commit.
