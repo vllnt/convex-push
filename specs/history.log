@@ -1,0 +1,1 @@
+2026-11-27 | built | v0.1.0-canary | n/a | 1 session | APNs, FCM, Web Push senders, registry, queue, token cache, 3 extension points; 4 runtime proofs; 100% coverage. Real-device delivery not verified.
