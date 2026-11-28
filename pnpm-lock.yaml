@@ -39,8 +39,8 @@ importers:
         specifier: 2.1.0
         version: 2.1.0(@typescript-eslint/parser@8.73.0(@typescript/typescript6@6.0.2)(eslint@10.15.0)(typescript@7.0.2))(@typescript/typescript6@6.0.2)(convex@1.51.0)(eslint@10.15.0)(prettier@3.10.1)(turbo@2.11.13)(typescript@7.0.2)
       '@vllnt/typescript':
-        specifier: 2.0.0
-        version: 2.0.0(@typescript/typescript6@6.0.2)
+        specifier: 3.0.0
+        version: 3.0.0(@typescript/typescript6@6.0.2)
       convex:
         specifier: 1.51.0
         version: 1.51.0
@@ -897,8 +897,8 @@ packages:
   '@vllnt/logger@0.1.2':
     resolution: {integrity: sha512-xHSQgoArRKtFODnpEgjVyKRNXiCRTCiGDHK2kdMJ6/6+VGv9KXwzP265KC8RcXAL79/sLXVXdFoWXe3xACYOFw==}
 
-  '@vllnt/typescript@2.0.0':
-    resolution: {integrity: sha512-k+pUDoqBzTbGz8n0a0HwwrUb6khgpjBN+syhdtwQjkxy5Id6wrux3g4nrnWOCs/TyyPH1wiK8YzfpfHAFUpEXQ==}
+  '@vllnt/typescript@3.0.0':
+    resolution: {integrity: sha512-tgS4u3JHovAeq6EyW1UODjtsL22ITKn+jEk8UCQVFLROsxXiAxM5OOhQKHqgiLc6sWUVkVWaUZO5wNaliYXMrw==}
     engines: {node: '>=22'}
     peerDependencies:
       typescript: '>=6.0.2 <8'
@@ -3204,7 +3204,7 @@ snapshots:
 
   '@vllnt/logger@0.1.2': {}
 
-  '@vllnt/typescript@2.0.0(@typescript/typescript6@6.0.2)':
+  '@vllnt/typescript@3.0.0(@typescript/typescript6@6.0.2)':
     dependencies:
       typescript: '@typescript/typescript6@6.0.2'
 
