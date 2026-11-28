@@ -6,7 +6,7 @@
 //    peer range) under the repo's release-age gate, every entry point imports
 //    or type-checks under strict settings, and the `./test` helper mounts the
 //    component in convex-test beside a host table of its own.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -68,8 +68,10 @@ const FORBIDDEN = [
 const REPO_BLOB =
   /^https:\/\/github\.com\/vllnt\/convex-push\/blob\/[^/]+\/(.+)$/;
 
+const MINUTE = 60_000;
 const output = execFileSync("pnpm", ["pack", "--dry-run", "--json"], {
   encoding: "utf8",
+  timeout: 3 * MINUTE,
 });
 const packed = new Set(JSON.parse(output).files.map((file) => file.path));
 
@@ -104,9 +106,44 @@ console.log(
 // --- 2. Install and use the packed tarball --------------------------------
 const tarball = `${name.replace("@", "").replace("/", "-")}-${version}.tgz`;
 const temporary = mkdtempSync(join(tmpdir(), "push-consumer-"));
-/** @param {string} command @param {string[]} args */
-const run = (command, args, cwd = temporary) =>
-  execFileSync(command, args, { cwd, stdio: "inherit" });
+const cleanup = () => rmSync(temporary, { force: true, recursive: true });
+/** @type {import("node:child_process").ChildProcess | undefined} */
+let child;
+// Asynchronous children, so these handlers run while one is going.
+for (const [signal, code] of /** @type {const} */ ([
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+])) {
+  process.once(signal, () => {
+    child?.kill("SIGTERM");
+    cleanup();
+    process.exit(code);
+  });
+}
+/**
+ * Run a command; it is killed and fails after `minutes`, so a hang cannot block.
+ * @param {string} command @param {string[]} args @param {number} minutes
+ * @returns {Promise<void>}
+ */
+const run = (command, args, minutes, cwd = temporary) =>
+  new Promise((resolve, reject) => {
+    child = spawn(command, args, {
+      cwd,
+      stdio: "inherit",
+      timeout: minutes * MINUTE,
+    });
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      child = undefined;
+      if (code === 0) resolve();
+      else
+        reject(
+          new Error(
+            `${command} ${args.join(" ")} failed (${signal ?? `exit ${code}`}; limit ${minutes} min)`,
+          ),
+        );
+    });
+  });
 /** @param {Record<string, string>} files */
 const write = (files) => {
   for (const [path, text] of Object.entries(files)) {
@@ -116,26 +153,30 @@ const write = (files) => {
 };
 /** @param {"ESNext" | "NodeNext"} module @param {string[]} files */
 const typecheck = (module, files) =>
-  run("pnpm", [
-    "exec",
-    "tsc",
-    "--noEmit",
-    "--strict",
-    "--module",
-    module,
-    "--moduleResolution",
-    module === "NodeNext" ? "NodeNext" : "Bundler",
-    "--target",
-    "ES2022",
-    "--lib",
-    "ES2023,DOM",
-    "--types",
-    "vite/client,node",
-    ...files,
-  ]);
+  run(
+    "pnpm",
+    [
+      "exec",
+      "tsc",
+      "--noEmit",
+      "--strict",
+      "--module",
+      module,
+      "--moduleResolution",
+      module === "NodeNext" ? "NodeNext" : "Bundler",
+      "--target",
+      "ES2022",
+      "--lib",
+      "ES2023,DOM",
+      "--types",
+      "vite/client,node",
+      ...files,
+    ],
+    3,
+  );
 
 try {
-  run("pnpm", ["pack", "--pack-destination", temporary], root);
+  await run("pnpm", ["pack", "--pack-destination", temporary], 3, root);
   write({
     "package.json": JSON.stringify({
       packageManager,
@@ -148,17 +189,21 @@ try {
     "pnpm-workspace.yaml": releaseAge,
   });
   // Low end of the convex peer range; the test toolchain a consumer would use.
-  run("pnpm", [
-    "add",
-    join(temporary, tarball),
-    "convex@1.47.0",
-    "convex-test@0.0.73",
-    "typescript@5.9.3",
-    "vite@8.3.8",
-    "vitest@5.1.1",
-    "@edge-runtime/vm@5.0.0",
-    "@types/node@22.20.2",
-  ]);
+  await run(
+    "pnpm",
+    [
+      "add",
+      join(temporary, tarball),
+      "convex@1.47.0",
+      "convex-test@0.0.73",
+      "typescript@5.9.3",
+      "vite@8.3.8",
+      "vitest@5.1.1",
+      "@edge-runtime/vm@5.0.0",
+      "@types/node@22.20.2",
+    ],
+    5,
+  );
 
   // Agents read the bundled docs from node_modules, so they must install.
   const installed = join(temporary, "node_modules", name);
@@ -175,17 +220,36 @@ try {
 
   // Runtime entry points in plain Node. `./test` needs Vite and runs under vitest
   // below. `./convex.config` calls `use()`, which throws outside the Convex runtime
-  // (also under vitest), so the consumer type-checks it with `app.use(config)`.
-  run("node", [
-    "--input-type=module",
-    "-e",
-    `
+  // (also under vitest), so its runtime path is only resolved here, not executed,
+  // and the consumer type-checks it with `app.use(config)`. `./_generated/component`
+  // is types-only: when it gains a runtime path, that path must exist too.
+  await run(
+    "node",
+    [
+      "--input-type=module",
+      "-e",
+      `
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+const runtime = { "${name}/convex.config": true, "${name}/convex.config.js": true, "${name}/_generated/component": false, "${name}/_generated/component.js": false };
+for (const [entry, required] of Object.entries(runtime)) {
+  let url;
+  try {
+    url = import.meta.resolve(entry);
+  } catch (error) {
+    if (!required && error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED") continue;
+    throw error;
+  }
+  if (!existsSync(fileURLToPath(url))) throw new Error(entry + " resolves to a missing file: " + url);
+}
 const client = await import("${name}");
 const meta = (await import("${name}/package.json", { with: { type: "json" } })).default;
 if (typeof client.Push !== "function" || typeof client.deviceAddress !== "object" || meta.name !== "${name}")
   throw new Error("missing export");
 `,
-  ]);
+    ],
+    1,
+  );
 
   write({
     "vitest.config.mts": `
@@ -261,17 +325,17 @@ const host = defineSchema({ notes: defineTable({ body: v.string() }) });
 register(convexTest(host, {}), "custom");
 `,
   });
-  typecheck("ESNext", [
+  await typecheck("ESNext", [
     "consumer.ts",
     "registration.ts",
     "convex/host.test.ts",
   ]);
   // `./test` ships TypeScript source, so it must also compile for NodeNext consumers.
-  typecheck("NodeNext", ["consumer.ts", "registration.ts"]);
-  run("pnpm", ["exec", "vitest", "run"]);
+  await typecheck("NodeNext", ["consumer.ts", "registration.ts"]);
+  await run("pnpm", ["exec", "vitest", "run"], 3);
   console.log(
     `OK    package test: ${name}@${version} installs, imports, type-checks and mounts`,
   );
 } finally {
-  rmSync(temporary, { force: true, recursive: true });
+  cleanup();
 }
