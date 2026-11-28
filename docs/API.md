@@ -105,10 +105,14 @@ settings on each send.
 | `scrubContent` | `boolean` | `true` | Erase title, body, data and overrides once no delivery of the message is queued |
 | `retentionMs` | `number` | `2_592_000_000` (30 days) | Used by `prune`; the daily cron always uses 30 days |
 
-`apps`, `providers`, `onDelivery`, `maxAttempts`, `maxParallelism` and
-`scrubContent` travel with every send and are stored per message, so a change
-applies to the next send. `register` checks `appRef` against `apps` before
-calling the component.
+Every send carries the options to the component, so a change applies to the
+next send. At fan-out `apps` and `providers` pick each device's APNs target
+(`topic`, `environment`) or custom sender handle, which is stored on that
+delivery; `onDelivery` (as a function handle), `maxAttempts` and
+`scrubContent` are stored on the message; `maxParallelism` is not stored: a
+live send sets it on the provider's pool (retries leave the pool's value
+alone). `register` checks `appRef` against `apps` before calling the
+component.
 
 ### Context types
 
@@ -143,8 +147,8 @@ argument type.
   `INVALID_ADDRESS`. DNS answers are not checked. `p256dh` must decode to 65
   bytes and `auth` to 16.
 - Throws `UNKNOWN_APP` (appRef not in `apps`), `PLATFORM_MISMATCH` (address
-  does not fit the app), `INVALID_ADDRESS`, `INVALID_ARGUMENT` (a ref over 256
-  characters, `locale` over 64).
+  does not fit the app), `INVALID_ADDRESS`, `INVALID_ARGUMENT` (`subjectRef`,
+  `appRef` or `installRef` empty or over 256 characters, `locale` over 64).
 
 ### unregister
 
@@ -239,12 +243,14 @@ Deletes messages older than `retentionMs` that also expired more than a day
 ago (so no send job is still on its way), with their deliveries; devices that
 are `invalid` and unseen for `retentionMs`; and expired cached tokens. `batch`
 (integer 1 to 1,000, default 1,000) bounds the message and delivery rows one
-pass deletes; a pass finishes the message it started, looks at the 100 oldest
-messages, deletes up to 100 invalid devices and looks at 100 cached tokens.
-While there is more it schedules another pass (`more: true`). With
-`retentionMs` under 29 days, a message with a long TTL holds back the messages
-created after it until it is a day past expiry. The component's daily cron
-prunes with the 30-day default.
+pass deletes; a pass looks at the oldest `min(batch, 100)` messages created
+before the cutoff, deletes each one that expired more than a day ago with its
+deliveries (finishing the message it started), deletes up to 100 invalid
+devices and looks at 100 cached tokens. While there is more it schedules
+another pass (`more: true`). With `retentionMs` under 29 days, a message can
+be past the cutoff but not yet a day past expiry; it is skipped, and if every
+message a pass looks at is still inside expiry plus one day, the pass deletes
+no messages. The component's daily cron prunes with the 30-day default.
 
 ## Extension contracts
 
@@ -414,7 +420,7 @@ Thrown as `ConvexError({ code, message })`; `ERROR_CODES` lists them and
 
 | Code | When |
 |---|---|
-| `INVALID_ARGUMENT` | A ref, limit, option or setting out of range; `sendBatch` over 100 messages or 100 deliveries; `unregister` without exactly one of `deviceId` and `address` |
+| `INVALID_ARGUMENT` | Thrown by `register`, `unregister`, `send`, `sendBatch`, `listDevices`, `listBySubject` and `prune` (never by `setDeviceStatus`, `status` or `cancel`). A ref empty or over 256 characters; `locale` over 64; `title` or `body` over 1024; `to.deviceIds` not 1 to 100; `sound`, `category`, `threadId` or `channelId` over 256; Web Push `icon` or `url` over 1024; `collapseKey` not 1 to 64 printable ASCII bytes; `ttlSeconds`, `badge`, `maxAttempts`, `maxParallelism`, list `limit`, `batch` or `retentionMs` out of range; an APNs `topic` with spaces or non-ASCII; a custom provider or `onDelivery` that is not a function handle; `sendBatch` over 100 messages or 100 deliveries; `unregister` without exactly one of `deviceId` and `address` |
 | `INVALID_ADDRESS` | A token, endpoint, key or custom address that cannot be right (whitespace, length, not https to a public host, wrong key length) |
 | `INVALID_DATA` | Reserved, too many, too long or non-finite `data` |
 | `INVALID_RAW_JSON` | `rawJson` is not a JSON object or is over 4096 characters |

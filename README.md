@@ -377,6 +377,16 @@ export const webhook = internalAction({
 ```
 
 ```ts
+// convex/schema.ts
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
+
+export default defineSchema({
+  pushEvents: defineTable({ deliveryId: v.string(), status: v.string(), at: v.number() }),
+});
+```
+
+```ts
 // convex/pushHooks.ts
 import { deliveryEvent } from "@vllnt/convex-push";
 import { v } from "convex/values";
@@ -478,7 +488,7 @@ Thrown errors are `ConvexError` with `data.code`; the call changes nothing.
 
 | Code | Thrown by | Cause | Fix |
 |---|---|---|---|
-| `INVALID_ARGUMENT` | any method | A ref is empty or over 256 characters; a limit, `ttlSeconds`, `badge`, `collapseKey`, `maxAttempts`, `maxParallelism`, `batch` or `retentionMs` is out of range; `sendBatch` is over 100 messages or 100 deliveries; `unregister` got both or neither of `deviceId` and `address` | Fix the value; split the batch. Ranges: [Limits and gotchas](#limits-and-gotchas) |
+| `INVALID_ARGUMENT` | `register`, `unregister`, `send`, `sendBatch`, `listDevices`, `listBySubject`, `prune` | A ref (`subjectRef`, `appRef`, `installRef`, provider name, `idempotencyKey`) is empty or over 256 characters; `locale` is over 64; `title` or `body` is over 1024; `to.deviceIds` lists 0 or over 100 ids; `sound`, `category`, `threadId` or `channelId` is over 256, Web Push `icon` or `url` over 1024; `collapseKey`, `ttlSeconds`, `badge`, `maxAttempts`, `maxParallelism`, list `limit`, `batch` or `retentionMs` is out of range; an APNs `topic` has spaces or non-ASCII characters; a `providers` sender or `onDelivery` is not a function handle; `sendBatch` is over 100 messages or 100 deliveries; `unregister` got both or neither of `deviceId` and `address` | Fix the value; split the batch; pass function references (`internal.module.fn`) for senders and the hook. Ranges: [Limits and gotchas](#limits-and-gotchas) |
 | `INVALID_ADDRESS` | `register` | A token is empty, over 512 characters or has whitespace; a Web Push endpoint is not https to a public host on the default port; `p256dh` is not 65 bytes or `auth` not 16; a custom address is empty or over 2048 characters | Pass the address the platform SDK returned, unchanged |
 | `INVALID_DATA` | `send`, `sendBatch` | `data` has over 100 keys, a key that is empty, over 256 characters or reserved (`aps`, `from`, `notification`, `message_type`, `collapse_key`, `google.*`, `gcm.*`), a non-finite number or a string over 1024 characters | Rename or shorten the keys and values |
 | `INVALID_RAW_JSON` | `send`, `sendBatch` | An `overrides.*.rawJson` is not a JSON object or is over 4096 characters | Pass `JSON.stringify` of an object |
@@ -555,7 +565,7 @@ Provider codes are stored as the provider sent them:
 | Retry delay | 1 minute doubling to 30 minutes; `Retry-After` honoured within 1 second to 1 day; 15 minutes after an APNs 5xx and 60 seconds after an FCM 429 when no `Retry-After` | Retries stop at `maxAttempts` or expiry |
 | Provider request | 15 seconds | Retried as `TIMEOUT` |
 | `prune` `batch` | 1 to 1,000, default 1,000 | `INVALID_ARGUMENT` |
-| Prune pass | about `batch` message and delivery rows (100 oldest messages looked at), 100 invalid devices, 100 cached tokens looked at | Reschedules itself while there is more |
+| Prune pass | about `batch` message and delivery rows (oldest `min(batch, 100)` messages looked at), 100 invalid devices, 100 cached tokens looked at | Reschedules itself while there is more |
 | Retention | 30 days (`retentionMs`); a message is kept until a day after it expires | Daily cron uses 30 days |
 
 - `new Push(...)` checks nothing: `apps`, `maxAttempts`, `maxParallelism` and handles are checked by the component on each send.
@@ -569,7 +579,7 @@ Provider codes are stored as the provider sent them:
 - `cancel` cannot stop a job already running; if that job learns the device is dead, the device is still marked invalid.
 - Re-registering an `invalid` device makes it `active`; a `disabled` device stays disabled unless another subject registers it.
 - `scrubContent` is on by default: title, body, data and overrides are erased once no delivery is queued.
-- The daily cron ignores `retentionMs`. With `retentionMs` under 29 days, messages not yet a day past expiry are kept; if the 100 oldest are all such, a pass deletes no messages.
+- The daily cron ignores `retentionMs`. With `retentionMs` under 29 days, a message past the cutoff but not yet a day past expiry is skipped; if every message a pass looks at (the oldest `min(batch, 100)`) is still inside expiry plus one day, the pass deletes no messages.
 - `unregister` and `setDeviceStatus` with `subjectRef` return `false` for another subject's device; this guards host bugs, not hostile callers.
 - Version 0.1.0 is a canary: senders are tested against recorded provider responses, not real devices.
 

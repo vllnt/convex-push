@@ -622,8 +622,10 @@ const modulesOf = (examples) =>
     .map((path) => path.slice("convex/".length, -".ts".length));
 
 /**
- * Stub `convex/_generated` files typed from the examples: `api` and
- * `internal` from the example modules, `components` from their mounts.
+ * Stub `convex/_generated` files typed from the examples, as Convex codegen
+ * writes them: `api` and `internal` from the example modules, `components`
+ * from their mounts, and function builders typed by the schema. The schema is
+ * the examples' `convex/schema.ts`, or an empty one when none is given.
  * @param {string} installed @param {{ code: string, path: string }[]} examples
  * @returns {Record<string, string>}
  */
@@ -651,10 +653,26 @@ export function convexHost(installed, examples) {
     `export const internal = anyApi as unknown as FilterApi<FullApi, FunctionReference<any, "internal">>;`,
     `export const components = componentsGeneric() as unknown as { ${mounts.join(" ")} };`,
   ];
+  const server = [
+    `import { actionGeneric, internalActionGeneric, internalMutationGeneric, internalQueryGeneric, mutationGeneric, queryGeneric, type ActionBuilder, type DataModelFromSchemaDefinition, type MutationBuilder, type QueryBuilder } from "convex/server";`,
+    `import type schema from "../schema.js";`,
+    `type DataModel = DataModelFromSchemaDefinition<typeof schema>;`,
+    `export const action: ActionBuilder<DataModel, "public"> = actionGeneric;`,
+    `export const internalAction: ActionBuilder<DataModel, "internal"> = internalActionGeneric;`,
+    `export const mutation: MutationBuilder<DataModel, "public"> = mutationGeneric;`,
+    `export const internalMutation: MutationBuilder<DataModel, "internal"> = internalMutationGeneric;`,
+    `export const query: QueryBuilder<DataModel, "public"> = queryGeneric;`,
+    `export const internalQuery: QueryBuilder<DataModel, "internal"> = internalQueryGeneric;`,
+  ];
+  const hasSchema = examples.some(({ path }) => path === "convex/schema.ts");
   return {
     "convex/_generated/api.ts": `${api.join("\n")}\n`,
-    "convex/_generated/server.ts": `export { actionGeneric as action, internalActionGeneric as internalAction, internalMutationGeneric as internalMutation, internalQueryGeneric as internalQuery, mutationGeneric as mutation, queryGeneric as query } from "convex/server";\n`,
-    "convex/schema.ts": `import { defineSchema } from "convex/server";\nexport default defineSchema({});\n`,
+    "convex/_generated/server.ts": `${server.join("\n")}\n`,
+    ...(hasSchema
+      ? {}
+      : {
+          "convex/schema.ts": `import { defineSchema } from "convex/server";\nexport default defineSchema({});\n`,
+        }),
   };
 }
 
