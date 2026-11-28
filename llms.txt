@@ -1,33 +1,32 @@
 # @vllnt/convex-push
 
-> Push notifications sent straight from a Convex backend to Apple (APNs), Google (FCM HTTP v1) and browser push services (Web Push), as a Convex component. Device registry, durable send queue, retries, dead-device cleanup and an encrypted provider-token cache, with no relay service.
+> Convex component that sends push notifications from your backend straight to APNs, FCM and Web Push, with a device registry, retries and no relay service.
 
-`@vllnt/convex-push` is a publishable Convex component. Keys are bound to the component as environment variables at mount and never stored. Hosts extend it with a custom provider (one action), a delivery hook (one mutation) and `rawJson` payload fields. Requires `convex@^1.47.0` and uses `@convex-dev/workpool` and `@convex-dev/rate-limiter`. Version 0.1.0 is a canary: delivery to real devices is not verified yet.
+Install: `pnpm add @vllnt/convex-push@canary convex`. Use the `canary` tag until 0.1.0 is released: npm `latest` still points at an older first canary build. Requires `convex@^1.47.0` (component environment variables) and runs in the Convex default runtime. Keys (Apple `.p8`, Firebase service account, VAPID pair) are component env bound at mount, never function arguments. Version 0.1.0 is a canary: senders are tested against recorded provider responses, not real devices.
 
-For coding agents: this file, the API reference and the changelog are bundled in the npm package at `node_modules/@vllnt/convex-push/`, next to the source in `src/`. They match the installed version. Read them before writing code against this package.
+For coding agents: this file, `README.md`, `docs/API.md`, `CHANGELOG.md` and the TypeScript `src/` ship in `node_modules/@vllnt/convex-push/` and match the installed version. Read them before writing code against this package.
+
+## When to use
+
+- Use it when your Convex backend sends push notifications to iOS (APNs), Android (FCM HTTP v1) or browsers (Web Push) with your own Apple key, Firebase service account or VAPID keys.
+- Use it when you want the device registry, per-device delivery status, retries and dead-device cleanup inside your Convex deployment, with no third-party relay.
+- Use it when another channel (for example a webhook) should share the same queue and retries: a custom provider is one host action.
+- Do not use it when you want Expo's push service to hold your Apple and Google credentials and send for you: use `@convex-dev/expo-push-notifications`.
+- Do not use it when you send to FCM topics or conditions instead of registered devices: use `firebase-admin` in a `"use node"` action.
 
 ## Docs
 
-- [README](./README.md): Overview, installation with env binding, usage, extension points, security model and limits
-- [API Reference](./docs/API.md): Package exports, `Push` class methods, validators, provider answers, error codes and the delivery lifecycle
-- [Changelog](./CHANGELOG.md): Version history and release notes
-- [Contributing](https://github.com/vllnt/convex-push/blob/main/CONTRIBUTING.md): Development setup, validation commands, and release workflow notes
-
-## Examples
-
-These files are on GitHub `main` and may be newer than the installed version.
-
-- [Example host app](https://github.com/vllnt/convex-push/blob/main/example/convex/example.ts): Two mounts, the four platforms, a custom webhook provider and a delivery hook
-- [Example tests](https://github.com/vllnt/convex-push/blob/main/example/convex/example.test.ts): End-to-end behaviour with `convex-test` and recorded provider responses
+- [README](./README.md): install, quick start, API table, common tasks, limits and gotchas, compatibility, testing and security
+- [Errors and fixes](./README.md#errors-and-fixes): every thrown code, delivery code and provider code, with cause and fix
+- [API reference](./docs/API.md): `Push` methods, options, validators, constants, environment variables, provider answers and the security model
+- [Changelog](./CHANGELOG.md): version history
+- [License](./LICENSE): MIT
 
 ## Ecosystem
 
-- [vllnt oss](https://oss.vllnt.com/llms.txt): Index of the other vllnt open-source packages
-
-## Optional
-
-- [AGENTS](https://github.com/vllnt/convex-push/blob/main/AGENTS.md): Agent instructions for contributors to this repository
-- [Roadmap](https://github.com/vllnt/convex-push/blob/main/ROADMAP.md): What ships next and what waits for a consumer
-- [Security Policy](https://github.com/vllnt/convex-push/blob/main/SECURITY.md): Vulnerability reporting policy
-- [Code of Conduct](https://github.com/vllnt/convex-push/blob/main/CODE_OF_CONDUCT.md): Community participation guidelines
-- [License](./LICENSE): MIT license
+- [Package page](https://oss.vllnt.com/packages/convex-push)
+- [Release feed](https://oss.vllnt.com/packages/convex-push/rss.xml)
+- [All @vllnt packages](https://oss.vllnt.com/llms.txt)
+- [Search vllnt packages and docs](https://index.vllnt.com)
+- [vllnt](https://vllnt.com/llms.txt)
+- [Author](https://bntvllnt.com)

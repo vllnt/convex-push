@@ -113,6 +113,7 @@ function clientError(code: "PLATFORM_MISMATCH" | "UNKNOWN_APP", message: string)
  *   apps: { ios: { platform: "apns", topic: "com.example.app", environment: "production" } },
  * });
  * await push.send(ctx, { to: { subjectRef: userId }, title: "Support replied", body: preview });
+ * @see https://oss.vllnt.com/packages/convex-push
  */
 export class Push {
   /**

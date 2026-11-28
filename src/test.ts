@@ -21,5 +21,6 @@ export function register(t: TestConvex<SchemaDefinition<GenericSchema, boolean>>
   rateLimiterTest.register(t, `${name}/rateLimiter`);
 }
 
+/** The same helper as an object: `register`, the component `schema` and its `modules` map. */
 /* v8 ignore next -- declaration-only compatibility export; properties are tested above */
 export default { register, schema, modules };

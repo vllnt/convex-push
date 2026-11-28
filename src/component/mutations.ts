@@ -144,7 +144,7 @@ export const send = mutation({
 });
 
 /**
- * Enqueue up to 100 messages and 1,000 deliveries in one transaction. If one
+ * Enqueue up to 100 messages and 100 deliveries in one transaction. If one
  * is refused, or the batch fans out to more deliveries, none is queued.
  */
 export const sendBatch = mutation({
