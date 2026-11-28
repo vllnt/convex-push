@@ -136,7 +136,11 @@ pnpm test:package      # after build: installs the packed tarball in a temp cons
 ## Docs sync (MANDATORY)
 
 When any of these change, update the matching docs in the SAME commit (then
-`pnpm generate:llms`):
+`pnpm generate:llms`). `pnpm test:package` enforces the docs contract
+(`scripts/check-documentation.mjs`: README sections, API table, error codes,
+TSDoc, links, footer) and compiles every `ts` block in README.md and
+docs/API.md against the packed package; `pnpm check:links` checks external
+links over the network.
 
 | Change | Update |
 |--------|--------|

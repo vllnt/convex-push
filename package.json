@@ -1,7 +1,7 @@
 {
   "name": "@vllnt/convex-push",
   "version": "0.1.0",
-  "description": "Push notifications straight from a Convex backend to APNs, FCM and Web Push: device registry, durable send queue, retries, dead-device cleanup and cached provider tokens, with no relay service",
+  "description": "Convex component that sends push notifications from your backend straight to APNs, FCM and Web Push, with a device registry, retries and no relay service.",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.34.9",
@@ -52,6 +52,7 @@
     "test:coverage": "pnpm typecheck:tests && vitest run --coverage --coverage.reporter=text",
     "test:package": "node scripts/test-package.mjs",
     "generate:llms": "node scripts/generate-llms.mjs",
+    "check:links": "node scripts/check-documentation.mjs --links",
     "preversion": "pnpm install --frozen-lockfile && pnpm build && pnpm test && pnpm test:package && pnpm typecheck && pnpm generate:llms",
     "check:agents": "node -e \"const f=require('node:fs');if(!f.existsSync('AGENTS.md')||f.existsSync('CLAUDE.md')||f.existsSync('.claude'))process.exit(1)\"",
     "codegen": "pnpm convex codegen --component-dir ./src/component"
@@ -93,7 +94,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/vllnt/convex-push"
+    "url": "git+https://github.com/vllnt/convex-push.git"
   },
   "engines": {
     "node": ">=18"
@@ -108,8 +109,12 @@
     "push-notifications",
     "apns",
     "fcm",
+    "firebase",
     "web-push",
-    "vapid"
+    "vapid",
+    "ios",
+    "android",
+    "typescript"
   ],
   "pnpm": {
     "ignoredBuiltDependencies": [

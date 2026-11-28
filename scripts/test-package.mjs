@@ -6,6 +6,10 @@
 //    peer range) under the repo's release-age gate, every entry point imports
 //    or type-checks under strict settings, and the `./test` helper mounts the
 //    component in convex-test beside a host table of its own.
+// 3. The installed docs pass the documentation contract
+//    (check-documentation.mjs), and every `ts` example in README.md and
+//    docs/API.md type-checks in a stub Convex host; the README's test example
+//    runs under vitest.
 import { execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
@@ -18,6 +22,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
+
+import {
+  checkDocumentation,
+  convexHost,
+  writeHost,
+} from "./check-documentation.mjs";
 
 const root = process.cwd();
 const metadata = JSON.parse(readFileSync("package.json", "utf8"));
@@ -268,6 +278,18 @@ try {
   if (missing.length > 0)
     throw new Error(`installed package is missing ${missing.join(", ")}`);
 
+  // Docs contract on what consumers receive, then the doc examples in a stub host.
+  const examples = checkDocumentation(installed, temporary);
+  const docsHost = "docs-host";
+  const docsFiles = writeHost(
+    join(temporary, docsHost),
+    convexHost(installed, examples),
+    examples,
+  ).map((file) => join(docsHost, file));
+  console.log(
+    `OK    docs contract: ${examples.length} examples to compile`,
+  );
+
   // Runtime entry points in plain Node. `./test` needs Vite and runs under vitest
   // below. `./convex.config` calls `use()`, which throws outside the Convex runtime
   // (also under vitest), so its runtime path is only resolved here, not executed,
@@ -380,8 +402,11 @@ register(convexTest(host, {}), "custom");
     "registration.ts",
     "convex/host.test.ts",
   ]);
+  // Doc examples, compiled on their own: each stub host has its own `_generated`.
+  await typecheck("ESNext", docsFiles);
   // `./test` ships TypeScript source, so it must also compile for NodeNext consumers.
   await typecheck("NodeNext", ["consumer.ts", "registration.ts"]);
+  // Runs convex/host.test.ts and the README's test example under docs-host/.
   await run("pnpm", ["exec", "vitest", "run"], 3);
   console.log(
     `OK    package test: ${name}@${version} installs, imports, type-checks and mounts`,
