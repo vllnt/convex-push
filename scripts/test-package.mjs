@@ -106,40 +106,90 @@ console.log(
 // --- 2. Install and use the packed tarball --------------------------------
 const tarball = `${name.replace("@", "").replace("/", "-")}-${version}.tgz`;
 const temporary = mkdtempSync(join(tmpdir(), "push-consumer-"));
-const cleanup = () => rmSync(temporary, { force: true, recursive: true });
-/** @type {import("node:child_process").ChildProcess | undefined} */
-let child;
-// Asynchronous children, so these handlers run while one is going.
+const cleanup = () =>
+  rmSync(temporary, { force: true, recursive: true, maxRetries: 3 });
+const GRACE_MS = 5000;
+/** @param {number} pid @param {NodeJS.Signals} signal */
+const killGroup = (pid, signal) => {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // The group is already gone.
+  }
+};
+/** The running child: `stop` signals its process group and settles once it is gone. */
+/** @type {{ stop: (reason: string, signal: NodeJS.Signals) => void } | undefined} */
+let active;
+/** Exit code once SIGINT or SIGTERM arrived. */
+/** @type {number | undefined} */
+let interrupted;
+// Children run in their own process group (they do not get the terminal's
+// Ctrl-C), so these handlers forward the signal to the whole group.
 for (const [signal, code] of /** @type {const} */ ([
   ["SIGINT", 130],
   ["SIGTERM", 143],
 ])) {
-  process.once(signal, () => {
-    child?.kill("SIGTERM");
-    cleanup();
-    process.exit(code);
+  process.on(signal, () => {
+    if (interrupted !== undefined) return;
+    interrupted = code;
+    if (active) active.stop(`stopped by ${signal}`, signal);
+    else {
+      cleanup();
+      process.exit(code);
+    }
   });
 }
 /**
- * Run a command; it is killed and fails after `minutes`, so a hang cannot block.
+ * Run a command in its own process group. On its time limit or a signal the
+ * whole group gets SIGTERM (or the signal), then SIGKILL after GRACE_MS, and
+ * survivors are killed once the leader exits, so a hang cannot block or leak.
  * @param {string} command @param {string[]} args @param {number} minutes
  * @returns {Promise<void>}
  */
 const run = (command, args, minutes, cwd = temporary) =>
   new Promise((resolve, reject) => {
-    child = spawn(command, args, {
+    const child = spawn(command, args, {
       cwd,
       stdio: "inherit",
-      timeout: minutes * MINUTE,
+      detached: true,
     });
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      child = undefined;
-      if (code === 0) resolve();
+    /** @type {string | undefined} */
+    let stopped;
+    /** @type {NodeJS.Timeout | undefined} */
+    let force;
+    const stop = (
+      /** @type {string} */ reason,
+      /** @type {NodeJS.Signals} */ signal,
+    ) => {
+      if (stopped !== undefined || child.pid === undefined) return;
+      stopped = reason;
+      killGroup(child.pid, signal);
+      const pid = child.pid;
+      force = setTimeout(() => killGroup(pid, "SIGKILL"), GRACE_MS);
+    };
+    const limit = setTimeout(
+      () => stop(`timed out after ${minutes} min`, "SIGTERM"),
+      minutes * MINUTE,
+    );
+    active = { stop };
+    const settle = () => {
+      clearTimeout(limit);
+      clearTimeout(force);
+      active = undefined;
+    };
+    child.once("error", (error) => {
+      settle();
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      settle();
+      if (stopped !== undefined && child.pid !== undefined)
+        killGroup(child.pid, "SIGKILL");
+      if (stopped === undefined && code === 0) resolve();
       else
         reject(
           new Error(
-            `${command} ${args.join(" ")} failed (${signal ?? `exit ${code}`}; limit ${minutes} min)`,
+            `${command} ${args.join(" ")} failed (${stopped ?? signal ?? `exit ${code}`})`,
           ),
         );
     });
@@ -336,6 +386,9 @@ register(convexTest(host, {}), "custom");
   console.log(
     `OK    package test: ${name}@${version} installs, imports, type-checks and mounts`,
   );
+} catch (error) {
+  if (interrupted === undefined) throw error;
 } finally {
   cleanup();
 }
+if (interrupted !== undefined) process.exit(interrupted);
