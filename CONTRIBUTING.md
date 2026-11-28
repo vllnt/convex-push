@@ -35,6 +35,14 @@ pnpm test:watch    # watch mode
 - Mutations in `mutations.ts`, queries in `queries.ts`, validators in
   `validators.ts`
 
+## Dependencies
+
+Dependency updates are a manual pass; there is no update bot. pnpm's
+`minimumReleaseAge` in `pnpm-workspace.yaml` holds every new version back for 7
+days, except `@vllnt/*`. Raise `convex`, `@convex-dev/workpool` and
+`@convex-dev/rate-limiter` only in a PR of their own, not as part of a routine
+pass.
+
 ## Pull Requests
 
 - Target `main`

@@ -104,6 +104,8 @@ a consumer asks for a web subscription helper.
 - 100% test coverage is BLOCKING (`vitest.config.mts` thresholds).
 - Runtime deps: `@convex-dev/workpool`, `@convex-dev/rate-limiter`,
   `@vllnt/logger`, and `convex-helpers` (a required peer of workpool).
+- Dependency updates are a manual pass under the 7-day release-age rule in
+  `pnpm-workspace.yaml` (`@vllnt/*` excluded); there is no update bot.
 - Tests generate keys at run time (`src/testing/fixtures.ts`). Never
   commit a key, token or real-looking credential.
 - Provider calls are tested against recorded response shapes with `fetch`
