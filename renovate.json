@@ -1,5 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "ignoreDeps": ["convex", "@convex-dev/rate-limiter", "@convex-dev/workpool"]
+  "ignoreDeps": ["convex", "@convex-dev/rate-limiter", "@convex-dev/workpool"],
+  "minimumReleaseAge": "7 days",
+  "packageRules": [
+    {
+      "matchPackageNames": ["@vllnt/**"],
+      "minimumReleaseAge": null
+    }
+  ]
 }
