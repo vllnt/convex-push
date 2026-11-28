@@ -129,6 +129,8 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm test:coverage
+pnpm typecheck:tests   # test and example files (also run by test and test:coverage)
+pnpm test:package      # after build: installs the packed tarball in a temp consumer
 ```
 
 ## Docs sync (MANDATORY)
