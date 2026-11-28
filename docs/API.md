@@ -148,7 +148,8 @@ argument type.
   bytes and `auth` to 16.
 - Throws `UNKNOWN_APP` (appRef not in `apps`), `PLATFORM_MISMATCH` (address
   does not fit the app), `INVALID_ADDRESS`, `INVALID_ARGUMENT` (`subjectRef`,
-  `appRef` or `installRef` empty or over 256 characters, `locale` over 64).
+  `appRef`, `installRef` or a custom address's `provider` empty or over 256
+  characters, `locale` over 64).
 
 ### unregister
 
@@ -244,8 +245,10 @@ ago (so no send job is still on its way), with their deliveries; devices that
 are `invalid` and unseen for `retentionMs`; and expired cached tokens. `batch`
 (integer 1 to 1,000, default 1,000) bounds the message and delivery rows one
 pass deletes; a pass looks at the oldest `min(batch, 100)` messages created
-before the cutoff, deletes each one that expired more than a day ago with its
-deliveries (finishing the message it started), deletes up to 100 invalid
+before the cutoff and, within `batch` rows, deletes each one that expired
+more than a day ago with its deliveries; it stops at the first message that
+would go over `batch` (the first message of a pass is always deleted whole).
+It also deletes up to 100 invalid
 devices and looks at 100 cached tokens. While there is more it schedules
 another pass (`more: true`). With `retentionMs` under 29 days, a message can
 be past the cutoff but not yet a day past expiry; it is skipped, and if every
@@ -420,7 +423,7 @@ Thrown as `ConvexError({ code, message })`; `ERROR_CODES` lists them and
 
 | Code | When |
 |---|---|
-| `INVALID_ARGUMENT` | Thrown by `register`, `unregister`, `send`, `sendBatch`, `listDevices`, `listBySubject` and `prune` (never by `setDeviceStatus`, `status` or `cancel`). A ref empty or over 256 characters; `locale` over 64; `title` or `body` over 1024; `to.deviceIds` not 1 to 100; `sound`, `category`, `threadId` or `channelId` over 256; Web Push `icon` or `url` over 1024; `collapseKey` not 1 to 64 printable ASCII bytes; `ttlSeconds`, `badge`, `maxAttempts`, `maxParallelism`, list `limit`, `batch` or `retentionMs` out of range; an APNs `topic` with spaces or non-ASCII; a custom provider or `onDelivery` that is not a function handle; `sendBatch` over 100 messages or 100 deliveries; `unregister` without exactly one of `deviceId` and `address` |
+| `INVALID_ARGUMENT` | Thrown by `register`, `unregister`, `send`, `sendBatch`, `listDevices`, `listBySubject` and `prune` (never by `setDeviceStatus`, `status` or `cancel`). A ref empty or over 256 characters; `locale` over 64; `title` or `body` over 1024; `to.deviceIds` not 1 to 100; `sound`, `category`, `threadId` or `channelId` over 256; Web Push `icon` or `url` over 1024; `collapseKey` not 1 to 64 printable ASCII bytes; `ttlSeconds`, `badge`, `maxAttempts`, `maxParallelism`, list `limit`, `batch` or `retentionMs` out of range; an APNs `topic` that is empty or not printable ASCII without spaces; a custom provider or `onDelivery` that is not a function handle; `sendBatch` over 100 messages or 100 deliveries; `unregister` without exactly one of `deviceId` and `address` |
 | `INVALID_ADDRESS` | A token, endpoint, key or custom address that cannot be right (whitespace, length, not https to a public host, wrong key length) |
 | `INVALID_DATA` | Reserved, too many, too long or non-finite `data` |
 | `INVALID_RAW_JSON` | `rawJson` is not a JSON object or is over 4096 characters |
