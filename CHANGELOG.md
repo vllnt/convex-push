@@ -39,3 +39,6 @@ First canary. Delivery to real devices is not verified yet.
 - Content scrubbed from messages once every delivery has finished (on by
   default).
 - `@vllnt/convex-push/test` `register()` helper for `convex-test`.
+- Runtime dependencies: `@convex-dev/workpool` ^0.5.0, `@convex-dev/rate-limiter`
+  ^0.4.3, `convex-helpers` ^0.1.136 and `@vllnt/logger` ^0.1.2; peer `convex`
+  ^1.47.0.
